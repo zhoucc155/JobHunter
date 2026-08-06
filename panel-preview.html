@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>JobHunter 面板 · 高级灵动蓝绿渐变预览</title>
+<link rel="stylesheet" href="extension/content/panel.css" />
+<style>
+  /* 仅用于预览演示：模拟招聘站点背景 + 让 hover 类可循环展示 */
+  body {
+    margin: 0; min-height: 100vh; padding: 28px;
+    background: linear-gradient(180deg, #eef2f4, #e3e9ec);
+    font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+  }
+  .demo-tip {
+    max-width: 380px; margin: 8px 0 24px;
+    background: #fff; border-radius: 14px; padding: 16px 18px;
+    box-shadow: 0 10px 30px -12px rgba(15,23,42,0.25);
+    color: #334155; font-size: 13px; line-height: 1.7;
+  }
+  .demo-tip h2 { margin: 0 0 8px; font-size: 15px; color: #0f766e; }
+  .demo-tip code { background: #f0fdfa; color: #0f766e; padding: 1px 6px; border-radius: 5px; }
+  /* 用 class 模拟 :hover，让描边流光自动循环可见 */
+  .jh-job.demo-hover { transform: translateY(-3px); background: linear-gradient(180deg,#fff,#f5fdfc); box-shadow: 0 12px 26px -10px rgba(13,148,136,0.32); }
+  .jh-job.demo-hover::after { opacity: 1; }
+  .jh-btn.demo-hover { transform: translateY(-2px); }
+  .jh-btn-primary.demo-hover { background-position: 100% 0; }
+  .jh-stat.demo-hover { transform: translateY(-3px); box-shadow: 0 10px 22px -10px rgba(13,148,136,0.3); border-color: #5eead4; }
+</style>
+</head>
+<body>
+
+<div class="demo-tip">
+  <h2>预览说明</h2>
+  这是 JobHunter 面板在「还原后的静态清爽蓝绿版」下的真实渲染（直接引用 <code>panel.css</code>），已还原为改动前的视觉效果。
+  面板底部固定一行新增了开发者小字标记 <code>© 周周周晏宁</code>（中性文本版权符，无 emoji 变体）。重载扩展后即为此效果。
+</div>
+
+<!-- ===== 模拟面板（结构与 panel.js 一致，类名不变） ===== -->
+
+<div id="jh-fab">猎</div>
+
+<div id="jh-panel" class="jh-open">
+  <div class="jh-header">
+    <div class="jh-title">JobHunter <small>智能求职助手</small></div>
+    <div class="jh-collapse" title="收起面板">^</div>
+  </div>
+
+  <div class="jh-tabs">
+    <div class="jh-tab">我的简历</div>
+    <div class="jh-tab jh-active">采集配置</div>
+    <div class="jh-tab">岗位管理</div>
+    <div class="jh-tab">投递记录</div>
+  </div>
+
+  <div class="jh-body">
+    <div class="jh-section jh-active">
+      <label class="jh-label">意向城市</label>
+      <input class="jh-input" id="demoCity" value="深圳, 广州, 杭州" />
+      <label class="jh-label">搜索关键词</label>
+      <input class="jh-input" value="内容运营" />
+      <label class="jh-label">每日投递上限</label>
+      <input class="jh-input" value="30" />
+
+      <div class="jh-status jh-show jh-ok">已采集 23 个岗位，准备开始智能投递</div>
+
+      <button class="jh-btn jh-btn-primary jh-block" id="demoBtn">开始智能投递</button>
+    </div>
+
+    <div style="height:14px"></div>
+
+    <!-- 统计卡 -->
+    <div class="jh-stats">
+      <div class="jh-stat jh-stat-success"><b>18</b><span>已投递</span></div>
+      <div class="jh-stat jh-stat-skip"><b>3</b><span>已跳过</span></div>
+      <div class="jh-stat jh-stat-fail"><b>2</b><span>失败</span></div>
+    </div>
+
+    <!-- 岗位卡片示例 -->
+    <div class="jh-job">
+      <input type="checkbox" checked />
+      <div class="jh-job-main">
+        <div class="jh-job-title jh-job-link">高级内容运营专家</div>
+        <div class="jh-job-sub">某科技公司 · <span class="jh-job-salary">25-40K·14薪</span> · 深圳</div>
+        <div class="jh-job-meta">
+          <span class="jh-tag">内容生态</span>
+          <span class="jh-tag">创作者运营</span>
+          <span class="jh-tag jh-tag-ok">匹配 92</span>
+        </div>
+      </div>
+      <div class="jh-score jh-score-high">92<small>匹配</small></div>
+    </div>
+
+    <div class="jh-job">
+      <input type="checkbox" />
+      <div class="jh-job-main">
+        <div class="jh-job-title jh-job-link">用户增长运营</div>
+        <div class="jh-job-sub">某互联网公司 · <span class="jh-job-salary">20-35K</span> · 广州</div>
+        <div class="jh-job-meta">
+          <span class="jh-tag">增长</span>
+          <span class="jh-tag jh-tag-warn">需复核</span>
+        </div>
+      </div>
+      <div class="jh-score jh-score-mid">74<small>匹配</small></div>
+    </div>
+  </div>
+  <div class="jh-footer">&copy; 周周周晏宁</div>
+</div>
+
+<script>
+  // 自动聚焦输入框，展示「呼吸光晕」效果
+  window.addEventListener('load', () => {
+    const city = document.getElementById('demoCity');
+    if (city) setTimeout(() => city.focus(), 600);
+
+    // 让岗位卡片 / 按钮 / 统计卡的 hover 类循环，使渐变描边与浮起自动可见
+    const loop = (sel, period) => {
+      const els = document.querySelectorAll(sel);
+      if (!els.length) return;
+      let i = 0;
+      setInterval(() => {
+        els.forEach(e => e.classList.remove('demo-hover'));
+        els[i % els.length].classList.add('demo-hover');
+        i++;
+      }, period);
+    };
+    loop('.jh-job', 1600);
+    loop('.jh-stat', 2000);
+    const btn = document.getElementById('demoBtn');
+    if (btn) setInterval(() => btn.classList.toggle('demo-hover'), 1800);
+  });
+</script>
+</body>
+</html>

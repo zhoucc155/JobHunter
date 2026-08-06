@@ -1,0 +1,38 @@
+{
+  "manifest_version": 3,
+  "name": "JobHunter 求职助手",
+  "version": "1.0.0",
+  "description": "BOSS直聘智能求职助手：自动采集岗位、AI匹配度分析、半自动安全投递",
+  "permissions": ["storage", "tabs", "scripting", "alarms", "debugger"],
+  "host_permissions": [
+    "https://www.zhipin.com/*",
+    "https://api.deepseek.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "JobHunter 求职助手（点击展开/收起面板）"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://www.zhipin.com/*"],
+      "js": [
+        "content/selectors.js",
+        "content/utils.js",
+        "content/collector.js",
+        "content/deliver.js",
+        "content/panel.js",
+        "content/main.js"
+      ],
+      "css": ["content/panel.css"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://www.zhipin.com/*"],
+      "js": ["content/pageworld.js"],
+      "world": "MAIN",
+      "run_at": "document_idle"
+    }
+  ]
+}

@@ -1,0 +1,21 @@
+# ===== 不进仓库的文件 =====
+
+# 本地回退备份（目录 + 压缩包）
+extension-backup-*/
+*.zip
+
+# 项目记忆与工作缓存（含本地工作日志，不公开）
+.workbuddy/
+.cache/
+
+# 临时测试脚本
+_tmp_*
+
+# extension 内的历史留底样式（非运行必需）
+*.bak-*
+*.gradient-*
+
+# 系统 / 编辑器
+.DS_Store
+Thumbs.db
+*.log
