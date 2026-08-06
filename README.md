@@ -1,5 +1,11 @@
 # JobHunter · BOSS 直聘智能求职助手
 
+[![Chrome Extension](https://img.shields.io/badge/Chrome%20Extension-BOSS%E7%9B%B4%E8%81%98-0d9488)](https://github.com/zhoucc155/JobHunter)
+[![AI Engine](https://img.shields.io/badge/AI-DeepSeek-06b6d4)](https://github.com/zhoucc155/JobHunter)
+[![License](https://img.shields.io/badge/License-Unspecified-lightgrey)](https://github.com/zhoucc155/JobHunter)
+
+> BOSS 直聘智能求职助手 · Chrome 扩展：岗位采集、AI 匹配分析、真人风打招呼文案、半自动/自动投递，账号与数据均留本地。
+
 一个本地运行的 Chrome 扩展，帮你在 BOSS 直聘上更高效地完成「采集岗位 → AI 匹配分析 → 生成真人风打招呼文案 → 投递」的闭环。文案由扩展内调用 DeepSeek 本地生成，**账号与数据都留在你自己的浏览器里**，不上传任何服务器。
 
 > 仅供个人求职自用。请遵守 BOSS 直聘用户协议与平台风控规则，合理使用自动投递节奏，避免高频触发风控。
@@ -71,18 +77,15 @@ JobHunter/
 │   │   ├── collector.js  # 岗位采集与薪资解析
 │   │   ├── deliver.js    # 单岗位投递执行
 │   │   └── utils.js      # 公共工具
-│   └── ...
-├── diag/               # 页面诊断脚本
-├── greeting-*.md       # 打招呼文案方案设计文档
-├── 版本说明文档.txt      # 版本迭代记录
-└── 采集配置.txt         # 采集配置说明
+│   └── README.md         # 扩展内说明
+└── README.md           # 仓库说明（本文件）
 ```
 
 ---
 
 ## 版本迭代
 
-见 [`版本说明文档.txt`](版本说明文档.txt)，含各版本功能点与备份记录。
+- `v1.0.0`（首个公开版本）：岗位采集、AI 匹配分析、真人风打招呼文案、半自动/自动投递、投递记录环形图统计、面板展开点击外部自动收起。
 
 ---
 
