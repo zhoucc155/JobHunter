@@ -19,3 +19,7 @@ _tmp_*
 .DS_Store
 Thumbs.db
 *.log
+
+# 个人自建文档（不进公开仓库，仅留本地）
+版本说明文档.txt
+采集配置.txt
