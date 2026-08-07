@@ -591,7 +591,7 @@ const JHPanel = {
           <div class="jh-confirm-actions"><button class="jh-btn jh-btn-primary" id="jh-diag-close">关闭</button></div>
         </div>`;
       this.el.appendChild(mask);
-      mask.querySelector('#jh-diag-close').addEventListener('click', () => mask.remove());
+      mask.querySelector('#jh-diag-close').addEventListener('click', (e) => { e.stopPropagation(); mask.remove(); });
     }
   },
 
@@ -886,14 +886,16 @@ const JHPanel = {
       if (autoMode) this.startCountdown(job, ta);
     }
 
-    mask.querySelector('#jh-c-skip').addEventListener('click', async () => {
+    mask.querySelector('#jh-c-skip').addEventListener('click', async (e) => {
+      e.stopPropagation(); // 阻止冒泡到 document 的全局收起监听（移除小窗后 e.target 已脱离 DOM，会被误判为"点面板外"）
       if (autoMode) this.clearAutoTimer();
       await JH.appendLog({ jobId: job.id, title: job.title, company: job.company, result: 'skip', reason: '用户跳过' });
       this.deliverQueue.shift();
       this.removeConfirmCard();
       await this.nextDeliverConfirm();
     });
-    mask.querySelector('#jh-c-stop').addEventListener('click', () => {
+    mask.querySelector('#jh-c-stop').addEventListener('click', (e) => {
+      e.stopPropagation(); // 阻止冒泡到 document 的全局收起监听（移除小窗后 e.target 已脱离 DOM，会被误判为"点面板外"导致面板误收起）
       if (autoMode) this.clearAutoTimer();
       this._pendingGreeting = null;
       this._pendingGreetingJobId = null;
