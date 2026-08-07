@@ -689,7 +689,7 @@ const JHPanel = {
     const delivered = jobs.filter((j) => j.status === 'delivered');
     const salaryHidden = jobs.filter((j) => j.salaryExcluded).length;
     const sel = this.getSelectedIds().length;
-    const hiddenTip = salaryHidden ? ' · 已隐藏 ' + salaryHidden + ' 个薪资不符' : '';
+    const hiddenTip = salaryHidden ? ' · 已过滤 ' + salaryHidden + ' 个' : '';
     el.textContent = showDelivered
       ? '未投递 ' + undelivered.length + ' 个 · 已投递 ' + delivered.length + ' 个'
       : '共 ' + undelivered.length + ' 个岗位' + (sel ? ' · 已选 ' + sel + ' 个' : '') + hiddenTip;
