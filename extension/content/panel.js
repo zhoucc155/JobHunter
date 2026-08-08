@@ -208,8 +208,10 @@ const JHPanel = {
       this.status(e.target.checked ? '已开启自动循环投递：生成文案后将自动发送并进入下一岗' : '已关闭自动循环投递：恢复逐条确认', 'info', 4000);
     });
 
-    // 面板展开时，点击面板及悬浮球以外的任意处自动收起（遮罩卡片属面板内，不会误关）
-    document.addEventListener('click', (e) => {
+    // 面板展开时，在面板及悬浮球「以外」按下鼠标才自动收起。
+    // 用 mousedown 而非 click：从面板内按下、拖到面板外松开（如框选输入框文字）不会误收起，
+    // 只有真正在面板外发起的点击才收起（遮罩卡片属面板内，不会误关）。
+    document.addEventListener('mousedown', (e) => {
       if (!this.el.classList.contains('jh-open')) return;            // 已收起则不处理
       if (this.el.contains(e.target) || this.fab.contains(e.target)) return; // 面板内 / 悬浮球内忽略
       this.close();
@@ -476,11 +478,14 @@ const JHPanel = {
     btn.innerHTML = '<span class="jh-spin"></span>采集中';
     btn.disabled = true;
     try {
+      const filterSig = this.calcFilterSig(config);
+      const { filteredJobs: _fj = [] } = await JH.get(['filteredJobs']);
+      const oldFiltered = new Map(_fj.map((f) => [f.id, f.filterSig || '']));
       const existingIds = new Set(ctx.collectedIds);
       const remain = Math.max(0, ctx.maxCount - ctx.listJobs.length); // 总上限按剩余配额分摊到各城市
       this.status(`多城市采集（${ctx.idx + 1}/${ctx.cities.length}）：${ctx.cities[ctx.idx]}`, 'info', 0);
 
-      const listRes = await JHCollector.collectFromListPage(config, existingIds, deliveredIds, remain, (job, reasons) => this.recordFiltered(job, reasons));
+      const listRes = await JHCollector.collectFromListPage(config, existingIds, deliveredIds, remain, (job, reasons) => this.recordFiltered(job, reasons, filterSig), oldFiltered, filterSig);
       if (listRes.risk) {
         await JH.set({ collectCtx: null, autoCollect: false });
         this.status('⚠️ 检测到安全验证，采集已熔断。请手动完成验证后重新点击采集', 'error', 0);
@@ -515,7 +520,7 @@ const JHPanel = {
       // 全部城市采完 → 统一进详情页补采
       await JH.set({ collectCtx: null, autoCollect: false, collectNav: null });
       this.status(`列表采集完成（共 ${ctx.listJobs.length} 个，跨 ${ctx.cities.length} 城），正在补采 JD…`, 'info', 0);
-      await this.enrichAndSave(ctx.listJobs, config, jobs, deliveredIds, { scanned: ctx.scanned, duplicate: ctx.duplicate, filteredList: ctx.filteredList });
+      await this.enrichAndSave(ctx.listJobs, config, jobs, deliveredIds, { scanned: ctx.scanned, duplicate: ctx.duplicate, filteredList: ctx.filteredList }, oldFiltered, filterSig);
     } catch (e) {
       this.status('采集出错：' + (e.message || e), 'error');
     } finally {
@@ -545,13 +550,16 @@ const JHPanel = {
     }
     if (!sc.ok) this.status(`⚠️ 页面实际城市与配置不符（期望 ${city}），将按实际渲染城市采集`, 'warn', 6000);
     try {
+      const filterSig = this.calcFilterSig(config);
+      const { filteredJobs: _fj = [] } = await JH.get(['filteredJobs']);
+      const oldFiltered = new Map(_fj.map((f) => [f.id, f.filterSig || '']));
       const existingIds = new Set(jobs.map((j) => j.id));
-      const listRes = await JHCollector.collectFromListPage(config, existingIds, deliveredIds, maxCount, (job, reasons) => this.recordFiltered(job, reasons));
+      const listRes = await JHCollector.collectFromListPage(config, existingIds, deliveredIds, maxCount, (job, reasons) => this.recordFiltered(job, reasons, filterSig), oldFiltered, filterSig);
       if (listRes.risk) {
         this.status('⚠️ 检测到安全验证，采集已熔断。请手动完成验证后再试', 'error', 0);
         return;
       }
-      await this.enrichAndSave(listRes.jobs, config, jobs, deliveredIds, { scanned: listRes.scanned || 0, duplicate: listRes.duplicate || 0, filteredList: listRes.filteredList || 0 });
+      await this.enrichAndSave(listRes.jobs, config, jobs, deliveredIds, { scanned: listRes.scanned || 0, duplicate: listRes.duplicate || 0, filteredList: listRes.filteredList || 0 }, oldFiltered, filterSig);
       await JH.set({ cityFixTried: null });
     } catch (e) {
       this.status('采集出错：' + (e.message || e), 'error');
@@ -567,26 +575,42 @@ const JHPanel = {
   // 记录被过滤掉的岗位（不进主岗位列表，仅用于「今日速览-已过滤」统计）
   // 维度 key：salary(薪资) / keyword(关键词) / headhunter(猎头代招) / inactiveHR(7日不活跃HR)
   // ==========================================================
-  async recordFiltered(job, reasons) {
+  /** 计算当前采集过滤配置指纹（用于判定「旧过滤岗位」：配置未变则已过滤岗位算重复，变了则重新判定） */
+  calcFilterSig(config) {
+    const c = config || {};
+    return [
+      'salary', c.filterSalary ? 1 : 0, c.salaryRange || '',
+      'kw', (c.excludeKeywords || '').trim(),
+      'hh', c.filterHeadhunter ? 1 : 0,
+      'ihr', c.filterInactiveHR ? 1 : 0,
+    ].join('|');
+  },
+
+  /** 记录被过滤掉的岗位（不进主岗位列表，仅用于「今日速览-已过滤」统计）
+   *  @param {string} [filterSig] 过滤配置指纹：同 id 已有记录且签名相同 → 覆盖更新（过滤条件一致）；签名不同（用户改了过滤配置）→ 覆盖为新条件 */
+  async recordFiltered(job, reasons, filterSig) {
     if (!job || !job.id || !reasons || !reasons.length) return;
+    const sig = filterSig || '';
     const { filteredJobs = [] } = await JH.get(['filteredJobs']);
-    if (filteredJobs.some((f) => f.id === job.id)) return; // 按 id 去重
-    filteredJobs.push({
+    const entry = {
       id: job.id,
       title: job.title || '',
       company: job.company || '',
       cityName: job.cityName || '',
       reasons: reasons.slice(),
+      filterSig: sig,
       filteredAtTs: Date.now(),
-    });
+    };
+    const idx = filteredJobs.findIndex((f) => f.id === job.id);
+    if (idx >= 0) filteredJobs[idx] = entry; else filteredJobs.push(entry); // 按 id upsert
     // 控制体积：超过 800 条时丢弃最旧的
     const trimmed = filteredJobs.length > 800 ? filteredJobs.slice(filteredJobs.length - 800) : filteredJobs;
     await JH.set({ filteredJobs: trimmed });
   },
 
-  async enrichAndSave(listJobs, config, jobs, deliveredIds, listStats = { scanned: 0, duplicate: 0, filteredList: 0 }) {
+  async enrichAndSave(listJobs, config, jobs, deliveredIds, listStats = { scanned: 0, duplicate: 0, filteredList: 0 }, oldFiltered = new Map(), currentSig = '') {
     const scannedN = listStats.scanned || 0;
-    const duplicateN = listStats.duplicate || 0;
+    let duplicateN = listStats.duplicate || 0;
     const filteredListN = listStats.filteredList || 0;
     if (!listJobs.length) {
       this.status(`本次扫描 ${scannedN} 个 · 新增 0 · 过滤 ${filteredListN} · 重复 ${duplicateN}`, 'warn', 8000);
@@ -621,14 +645,24 @@ const JHPanel = {
       if (!job || !job.id || handledIds.has(job.id)) return;
       const check = JHCollector.passDetailFilter(job, config);
       if (!check.pass) {
-        handledIds.add(job.id); filtered++;
+        handledIds.add(job.id);
         const dim = reasonToDim(check.reason);
-        if (dim) this.recordFiltered(job, [dim]);
+        const prevSig = (oldFiltered && typeof oldFiltered.get === 'function') ? oldFiltered.get(job.id) : undefined;
+        if (dim && prevSig !== undefined && prevSig === currentSig) {
+          duplicateN++; // 旧过滤岗位（过滤配置未变）→ 计重复，不算新过滤
+        } else {
+          filtered++;
+          if (dim) this.recordFiltered(job, [dim], currentSig);
+        }
         return;
       }
       handledIds.add(job.id);
       job.salaryExcluded = JHCollector.isSalaryExcluded(job.salary, live.salaryRange, live.filterSalary);
-      if (job.salaryExcluded) this.recordFiltered(job, ['salary']);
+      if (job.salaryExcluded) {
+        const prevSig = (oldFiltered && typeof oldFiltered.get === 'function') ? oldFiltered.get(job.id) : undefined;
+        if (prevSig !== undefined && prevSig === currentSig) duplicateN++; // 旧薪资过滤重复
+        else this.recordFiltered(job, ['salary'], currentSig);
+      }
       liveJobs.push(job);
       kept++;
       JH.set({ jobs: liveJobs });
@@ -647,10 +681,21 @@ const JHPanel = {
       for (const job of enriched) {
         if (!job || !job.id || handledIds.has(job.id)) continue;
         const check = JHCollector.passDetailFilter(job, config);
-        if (!check.pass) { handledIds.add(job.id); filtered++; const dim = reasonToDim(check.reason); if (dim) this.recordFiltered(job, [dim]); continue; }
+        if (!check.pass) {
+          handledIds.add(job.id);
+          const dim = reasonToDim(check.reason);
+          const prevSig = (oldFiltered && typeof oldFiltered.get === 'function') ? oldFiltered.get(job.id) : undefined;
+          if (dim && prevSig !== undefined && prevSig === currentSig) duplicateN++;
+          else { filtered++; if (dim) this.recordFiltered(job, [dim], currentSig); }
+          continue;
+        }
         handledIds.add(job.id);
         job.salaryExcluded = JHCollector.isSalaryExcluded(job.salary, live.salaryRange, live.filterSalary);
-        if (job.salaryExcluded) this.recordFiltered(job, ['salary']);
+        if (job.salaryExcluded) {
+          const prevSig = (oldFiltered && typeof oldFiltered.get === 'function') ? oldFiltered.get(job.id) : undefined;
+          if (prevSig !== undefined && prevSig === currentSig) duplicateN++;
+          else this.recordFiltered(job, ['salary'], currentSig);
+        }
         liveJobs.push(job);
         kept++;
       }

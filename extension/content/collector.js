@@ -210,12 +210,14 @@ const JHCollector = {
 
   /** 在当前搜索列表页采集岗位卡片（模拟真人滚动）
    *  @param {function} [onFiltered] 列表级被某过滤项挡掉的岗位回调 (job, reasons[])，用于「已过滤」统计记录 */
-  async collectFromListPage(config, existingIds, deliveredIds, maxCount, onFiltered) {
+  async collectFromListPage(config, existingIds, deliveredIds, maxCount, onFiltered, oldFiltered, currentSig) {
     const collected = [];
     let noNewRounds = 0;
     let scanned = 0;       // 本次扫描到的有效岗位卡片数
     let duplicate = 0;     // 已采集/已投递（重复）被跳过
     let filteredList = 0;  // 列表级被过滤项挡掉（关键词/猎头/基础筛选）
+    const oldMap = (oldFiltered && typeof oldFiltered.get === 'function') ? oldFiltered : null;
+    const sig = currentSig != null ? currentSig : '';
 
     for (let round = 0; round < 15 && collected.length < maxCount; round++) {
       if (JH.riskDetected()) return { risk: true, jobs: collected, scanned, duplicate, filteredList };
@@ -231,12 +233,19 @@ const JHCollector = {
         if (existingIds.has(job.id) || deliveredIds[job.id]) { duplicate++; continue; }   // 已采集/已投递去重
         if (collected.some((j) => j.id === job.id)) { duplicate++; continue; }
         const reasons = this.filterReasons(job, config);
-        if (reasons.length) {
-          filteredList++;
-          if (onFiltered) { try { await onFiltered(job, reasons); } catch (e) { /* 记录被挡岗位失败不阻断采集 */ } }
+        const basicFail = !this.passBasicFilter(job, config);
+        if (reasons.length || basicFail) {
+          const rs = reasons.length ? reasons : ['salary'];
+          // 旧过滤岗位（之前被挡且过滤配置未变）→ 计入「重复」，不重复计入「过滤」
+          const prevSig = oldMap ? oldMap.get(job.id) : undefined;
+          if (prevSig !== undefined && prevSig === sig) {
+            duplicate++;
+          } else {
+            filteredList++;
+            if (onFiltered) { try { await onFiltered(job, rs); } catch (e) { /* 记录被挡岗位失败不阻断采集 */ } }
+          }
           continue;
         }
-        if (!this.passBasicFilter(job, config)) { filteredList++; continue; }
         collected.push(job);
         existingIds.add(job.id);
       }
