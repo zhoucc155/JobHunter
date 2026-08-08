@@ -422,9 +422,12 @@ const JHPanel = {
         jobKeywords: config.jobKeywords,
         maxCount,
         collectedIds: jobs.map((j) => j.id), // 已有岗位也计入去重
-        listJobs: []
+        listJobs: [],
+        scanned: 0,      // 跨城市累计：本次扫描到的有效岗位卡片数
+        duplicate: 0,    // 已采集/已投递（重复）被跳过
+        filteredList: 0  // 列表级被过滤项挡掉（关键词/猎头/基础筛选）
       };
-      await JH.set({ collectCtx: ctx });
+      await JH.set({ collectCtx: ctx }); // 多城市采集上下文
       const url = JHCollector.buildSearchUrl(config.jobKeywords, cities[0]);
       if (await this.gotoSearch(url, `开始多城市采集（共 ${cities.length} 城）：${cities[0]}`)) return;
     }
@@ -467,6 +470,10 @@ const JHPanel = {
         this.status('⚠️ 检测到安全验证，采集已熔断。请手动完成验证后重新点击采集', 'error', 0);
         return;
       }
+      // 跨城市累计列表阶段计数
+      ctx.scanned += listRes.scanned || 0;
+      ctx.duplicate += listRes.duplicate || 0;
+      ctx.filteredList += listRes.filteredList || 0;
 
       // 合并当前城市结果（跨城市去重）
       let added = 0;
@@ -492,7 +499,7 @@ const JHPanel = {
       // 全部城市采完 → 统一进详情页补采
       await JH.set({ collectCtx: null, autoCollect: false, collectNav: null });
       this.status(`列表采集完成（共 ${ctx.listJobs.length} 个，跨 ${ctx.cities.length} 城），正在补采 JD…`, 'info', 0);
-      await this.enrichAndSave(ctx.listJobs, config, jobs, deliveredIds);
+      await this.enrichAndSave(ctx.listJobs, config, jobs, deliveredIds, { scanned: ctx.scanned, duplicate: ctx.duplicate, filteredList: ctx.filteredList });
     } catch (e) {
       this.status('采集出错：' + (e.message || e), 'error');
     } finally {
@@ -505,7 +512,7 @@ const JHPanel = {
   /** 单城市采集（原逻辑，向后兼容 cities.length<=1） */
   async collectSingle(city, config, jobs, deliveredIds, maxCount) {
     this.collecting = true;
-    await JH.set({ collectNav: null }); // 已成功落到目标搜索页，重置跳转计数
+    await JH.set({ collectNav: null });
     const btn = this.el.querySelector('#jh-collect');
     btn.innerHTML = '<span class="jh-spin"></span>采集中';
     btn.disabled = true;
@@ -528,7 +535,7 @@ const JHPanel = {
         this.status('⚠️ 检测到安全验证，采集已熔断。请手动完成验证后再试', 'error', 0);
         return;
       }
-      await this.enrichAndSave(listRes.jobs, config, jobs, deliveredIds);
+      await this.enrichAndSave(listRes.jobs, config, jobs, deliveredIds, { scanned: listRes.scanned || 0, duplicate: listRes.duplicate || 0, filteredList: listRes.filteredList || 0 });
       await JH.set({ cityFixTried: null });
     } catch (e) {
       this.status('采集出错：' + (e.message || e), 'error');
@@ -561,9 +568,12 @@ const JHPanel = {
     await JH.set({ filteredJobs: trimmed });
   },
 
-  async enrichAndSave(listJobs, config, jobs, deliveredIds) {
+  async enrichAndSave(listJobs, config, jobs, deliveredIds, listStats = { scanned: 0, duplicate: 0, filteredList: 0 }) {
+    const scannedN = listStats.scanned || 0;
+    const duplicateN = listStats.duplicate || 0;
+    const filteredListN = listStats.filteredList || 0;
     if (!listJobs.length) {
-      this.status('未采到新岗位（可能都已采集/被过滤，试试翻页或换关键词）', 'warn');
+      this.status(`本次扫描 ${scannedN} 个 · 新增 0 · 过滤 ${filteredListN} · 重复 ${duplicateN}`, 'warn', 8000);
       return 0;
     }
     this.status(`列表采集完成 ${listJobs.length} 个，正在逐个进详情页补采 JD（每个3~8秒）…`, 'info', 0);
@@ -638,7 +648,8 @@ const JHPanel = {
       this.status('⚠️ 检测到安全验证，详情补采已中断。已采集的岗位已保留在面板，请手动完成验证后重新点击采集', 'error', 0);
       return kept;
     }
-    this.status(`采集完成 ✓ 新增 ${kept} 个岗位${filtered ? `，过滤 ${filtered} 个（HR不活跃/猎头/命中过滤词）` : ''}`, 'ok', 8000);
+    const filteredN = filteredListN + filtered;
+    this.status(`采集完成 ✓ 本次扫描 ${scannedN} 个 · 新增 ${kept} · 过滤 ${filteredN} · 重复 ${duplicateN}`, 'ok', 8000);
     return kept;
   },
 
@@ -750,11 +761,9 @@ const JHPanel = {
     const delivered = jobs.filter((j) => j.status === 'delivered');
     const list = this.el.querySelector('#jh-joblist');
 
-    // 状态文案（含「已选 N 个」= 当前勾选准备投递的岗位数，实时刷新见 updateJobCount）
-    this.updateJobCount();
-
     if (!jobs.length) {
       list.innerHTML = '<div class="jh-empty">暂无岗位，点击「岗位采集」开始</div>';
+      this.updateJobCount();
       return;
     }
 
@@ -762,37 +771,39 @@ const JHPanel = {
     if (!showDelivered) {
       if (!undelivered.length) {
         list.innerHTML = '<div class="jh-empty">所有岗位均已投递 ✓ 勾选上方「显示已投递」可查看</div>';
+        this.updateJobCount();
         return;
       }
       list.innerHTML = this.renderJobCards(undelivered);
       this.bindJobLinks(list);
+      this.updateJobCount();
       return;
     }
 
     // 已勾选「显示已投递」：仅展示已投递岗位（不再出现「未投递 / 已投递」切换按钮）
     if (!delivered.length) {
       list.innerHTML = '<div class="jh-empty">暂无已投递岗位</div>';
+      this.updateJobCount();
       return;
     }
     list.innerHTML = this.renderJobCards(delivered);
     this.bindJobLinks(list);
+    this.updateJobCount();
   },
 
-  /** 更新岗位管理副标题：总数 + 当前勾选准备投递的岗位数（实时刷新） */
+  /** 更新岗位管理副标题：总数 + 当前勾选准备投递的岗位数（实时刷新）
+   *  规则：有勾选岗位 → 「共 x 个岗位 · 已选 x 个」；未勾选（含列表为空）→ 「共 x 个岗位」（已过滤统计已移至采集完成后的常驻汇总 banner） */
   updateJobCount() {
     const el = this.el.querySelector('#jh-jobcount');
     if (!el) return;
     const jobs = this._jobs || [];
-    if (!jobs.length) { el.textContent = ''; return; }
     const showDelivered = this.el.querySelector('#jh-show-delivered') && this.el.querySelector('#jh-show-delivered').checked;
     const undelivered = jobs.filter((j) => j.status !== 'delivered' && !j.salaryExcluded);
     const delivered = jobs.filter((j) => j.status === 'delivered');
-    const salaryHidden = jobs.filter((j) => j.salaryExcluded).length;
     const sel = this.getSelectedIds().length;
-    const hiddenTip = salaryHidden ? ' · 已过滤 ' + salaryHidden + ' 个' : '';
     el.textContent = showDelivered
       ? '未投递 ' + undelivered.length + ' 个 · 已投递 ' + delivered.length + ' 个'
-      : '共 ' + undelivered.length + ' 个岗位' + (sel ? ' · 已选 ' + sel + ' 个' : '') + hiddenTip;
+      : '共 ' + undelivered.length + ' 个岗位' + (sel ? ' · 已选 ' + sel + ' 个' : '');
   },
 
   /** 渲染岗位卡片列表（不含分组标题），按匹配分降序，未分析在后 */

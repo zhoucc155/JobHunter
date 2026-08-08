@@ -213,9 +213,12 @@ const JHCollector = {
   async collectFromListPage(config, existingIds, deliveredIds, maxCount, onFiltered) {
     const collected = [];
     let noNewRounds = 0;
+    let scanned = 0;       // 本次扫描到的有效岗位卡片数
+    let duplicate = 0;     // 已采集/已投递（重复）被跳过
+    let filteredList = 0;  // 列表级被过滤项挡掉（关键词/猎头/基础筛选）
 
     for (let round = 0; round < 15 && collected.length < maxCount; round++) {
-      if (JH.riskDetected()) return { risk: true, jobs: collected };
+      if (JH.riskDetected()) return { risk: true, jobs: collected, scanned, duplicate, filteredList };
 
       const cards = JH.$$(JH_SELECTORS.jobCard);
       const before = collected.length;
@@ -224,14 +227,16 @@ const JHCollector = {
         if (collected.length >= maxCount) break;
         const job = this.parseCard(card);
         if (!job) continue;
-        if (existingIds.has(job.id) || deliveredIds[job.id]) continue;   // 已采集/已投递去重
-        if (collected.some((j) => j.id === job.id)) continue;
+        scanned++;
+        if (existingIds.has(job.id) || deliveredIds[job.id]) { duplicate++; continue; }   // 已采集/已投递去重
+        if (collected.some((j) => j.id === job.id)) { duplicate++; continue; }
         const reasons = this.filterReasons(job, config);
         if (reasons.length) {
+          filteredList++;
           if (onFiltered) { try { await onFiltered(job, reasons); } catch (e) { /* 记录被挡岗位失败不阻断采集 */ } }
           continue;
         }
-        if (!this.passBasicFilter(job, config)) continue;
+        if (!this.passBasicFilter(job, config)) { filteredList++; continue; }
         collected.push(job);
         existingIds.add(job.id);
       }
@@ -243,7 +248,7 @@ const JHCollector = {
       await JH.humanScroll(JH.rand(500, 900));
       await JH.randSleep(1000, 2600);
     }
-    return { risk: false, jobs: collected };
+    return { risk: false, jobs: collected, scanned, duplicate, filteredList };
   },
 
   /** 解析单个岗位卡片 */
