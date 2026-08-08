@@ -1111,7 +1111,7 @@ const JHPanel = {
   // 投递记录
   // ==========================================================
   async renderLogs(logs, stats) {
-    const { jobs = [], deliveredIds = {} } = await JH.get(['jobs', 'deliveredIds']);
+    const { jobs = [], deliveredIds = {}, config = {} } = await JH.get(['jobs', 'deliveredIds', 'config']);
 
     // 今日 00:00 时间戳，用于判定「今日」新增
     const t0 = new Date();
@@ -1119,9 +1119,11 @@ const JHPanel = {
     const todayStart = t0.getTime();
     const isToday = (ts) => typeof ts === 'number' && ts >= todayStart;
 
-    // 今日速览
-    const found = jobs.filter((j) => isToday(j.collectedAtTs)).length;
-    const match = jobs.filter((j) => isToday(j.analyzedAtTs) && typeof j.score === 'number' && j.score >= 60).length;
+    // 今日速览：是否剔除「薪资已过滤」岗位，跟随用户采集配置（仅勾选了「按薪资过滤」才剔除，与采集时保持一致）
+    const honorExclusion = !!(config && config.filterSalary);
+    const notExcluded = (j) => !honorExclusion || !j.salaryExcluded;
+    const found = jobs.filter((j) => isToday(j.collectedAtTs) && notExcluded(j)).length;
+    const match = jobs.filter((j) => isToday(j.analyzedAtTs) && typeof j.score === 'number' && j.score >= 60 && notExcluded(j)).length;
     const deliveredToday = Object.keys(deliveredIds).filter((id) => isToday(deliveredIds[id])).length;
 
     // 进度概览（环形图：累计投递 / 总岗位）
