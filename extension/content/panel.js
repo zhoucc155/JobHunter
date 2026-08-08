@@ -16,6 +16,7 @@ const JHPanel = {
   // 初始化
   // ==========================================================
   async init() {
+    this._flashId = null; // 采集即时显示时新卡片的高亮标记
     if (document.getElementById('jh-panel')) return;
     this.render();
     this.bindEvents();
@@ -544,29 +545,63 @@ const JHPanel = {
       return 0;
     }
     this.status(`列表采集完成 ${listJobs.length} 个，正在逐个进详情页补采 JD（每个3~8秒）…`, 'info', 0);
-    const resp = await JH.send({ type: 'COLLECT_DETAILS', jobs: listJobs });
-    const enriched = (resp && resp.results) || [];
-
-    const kept = [];
-    let filtered = 0;
-    for (const job of enriched) {
-      const check = JHCollector.passDetailFilter(job, config);
-      if (check.pass) kept.push(job);
-      else filtered++;
-    }
-
-    // 薪资过滤：入库但打标记（不硬丢弃），改期望后可本地重算恢复
-    const { config: live = {} } = await JH.get(['config']);
-    for (const job of kept) {
-      job.salaryExcluded = JHCollector.isSalaryExcluded(job.salary, live.salaryRange, live.filterSalary);
-    }
 
     const { jobs: latestJobs = [] } = await JH.get(['jobs']);
-    const merged = [...latestJobs, ...kept];
-    await JH.set({ jobs: merged });
-    this.renderJobs(merged);
-    this.status(`采集完成 ✓ 新增 ${kept.length} 个岗位${filtered ? `，过滤 ${filtered} 个（HR不活跃/猎头/命中过滤词）` : ''}`, 'ok', 8000);
-    return kept.length;
+    const { config: live = {} } = await JH.get(['config']);
+
+    // 以内存数组为唯一数据源，边补采边写入，避免并发存储读写互相覆盖
+    const liveJobs = [...latestJobs];
+    const handledIds = new Set(liveJobs.map((j) => j.id));
+    let kept = 0, filtered = 0, risk = false;
+
+    // 详情补采每完成一个岗位，background 会通过 COLLECT_PROGRESS 推送；
+    // 通过详情筛选的岗位立即落库+渲染（不通过的不进面板，故无「先显示后移除」）。
+    const onProgress = (msg) => {
+      if (risk) return;
+      if (msg.type === 'COLLECT_RISK') { risk = true; return; }
+      if (msg.type !== 'COLLECT_PROGRESS') return;
+      const job = msg.job;
+      if (!job || !job.id || handledIds.has(job.id)) return;
+      const check = JHCollector.passDetailFilter(job, config);
+      if (!check.pass) { handledIds.add(job.id); filtered++; return; }
+      handledIds.add(job.id);
+      job.salaryExcluded = JHCollector.isSalaryExcluded(job.salary, live.salaryRange, live.filterSalary);
+      liveJobs.push(job);
+      kept++;
+      JH.set({ jobs: liveJobs });
+      this._flashId = job.id;            // 新增卡片高亮一次
+      this.renderJobs(liveJobs);
+      const done = msg.done || kept, total = msg.total || listJobs.length;
+      this.status(`详情补采中 ${done}/${total} · 已通过 ${kept}${filtered ? ` · 过滤 ${filtered}` : ''}`, 'info', 0);
+    };
+    chrome.runtime.onMessage.addListener(onProgress);
+
+    try {
+      const resp = await JH.send({ type: 'COLLECT_DETAILS', jobs: listJobs });
+      const enriched = (resp && resp.results) || [];
+
+      // 兜底对账：若个别 COLLECT_PROGRESS 消息丢失，用最终 results 补齐通过但未显示的岗位
+      for (const job of enriched) {
+        if (!job || !job.id || handledIds.has(job.id)) continue;
+        const check = JHCollector.passDetailFilter(job, config);
+        if (!check.pass) { handledIds.add(job.id); filtered++; continue; }
+        handledIds.add(job.id);
+        job.salaryExcluded = JHCollector.isSalaryExcluded(job.salary, live.salaryRange, live.filterSalary);
+        liveJobs.push(job);
+        kept++;
+      }
+      await JH.set({ jobs: liveJobs });
+      this.renderJobs(liveJobs);
+    } finally {
+      chrome.runtime.onMessage.removeListener(onProgress);
+    }
+
+    if (risk) {
+      this.status('⚠️ 检测到安全验证，详情补采已中断。已采集的岗位已保留在面板，请手动完成验证后重新点击采集', 'error', 0);
+      return kept;
+    }
+    this.status(`采集完成 ✓ 新增 ${kept} 个岗位${filtered ? `，过滤 ${filtered} 个（HR不活跃/猎头/命中过滤词）` : ''}`, 'ok', 8000);
+    return kept;
   },
 
   // ==========================================================
@@ -726,6 +761,8 @@ const JHPanel = {
   renderJobCards(arr) {
     const sorted = [...arr].sort((a, b) => (b.score ?? -1) - (a.score ?? -1));
     return sorted.map((j) => {
+      const flash = (j.id === this._flashId);
+      if (flash) this._flashId = null; // 高亮一次即清除，避免后续重渲染反复闪
       let scoreCls = 'jh-score-none', scoreTxt = '未析';
       if (j.score !== null && j.score !== undefined) {
         scoreTxt = j.score;
@@ -741,7 +778,7 @@ const JHPanel = {
       if (j.salary) subParts.push(`<span class="jh-job-salary">${j.salary}</span>`);
       if (j.city) subParts.push(j.city);
       return `
-        <div class="jh-job" data-id="${j.id}">
+        <div class="jh-job ${flash ? 'jh-job-flash' : ''}" data-id="${j.id}">
           <input type="checkbox" data-id="${j.id}" ${j.status === 'delivered' ? 'disabled' : ''} />
           <div class="jh-job-main">
             <div class="jh-job-title jh-job-link" data-url="${j.url || ''}" title="点击打开岗位详情页：${j.title}">${j.title}</div>
