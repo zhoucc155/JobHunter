@@ -20,6 +20,7 @@ const JHPanel = {
     if (document.getElementById('jh-panel')) return;
     this.render();
     this.bindEvents();
+    await this.restoreTab(); // 恢复上次停留的 Tab（导航重载后停在原页面）
     await this.loadAll();
   },
 
@@ -154,16 +155,9 @@ const JHPanel = {
     this.fab.addEventListener('click', () => this.open());
     this.el.querySelector('.jh-collapse').addEventListener('click', () => this.close());
 
-    // Tab 切换
+    // Tab 切换（记忆当前页，导航重载后面板恢复停留在此页）
     this.el.querySelectorAll('.jh-tab').forEach((tab) => {
-      tab.addEventListener('click', () => {
-        this.el.querySelectorAll('.jh-tab').forEach((t) => t.classList.remove('jh-active'));
-        this.el.querySelectorAll('.jh-section').forEach((s) => s.classList.remove('jh-active'));
-        tab.classList.add('jh-active');
-        this.el.querySelector(`[data-sec="${tab.dataset.tab}"]`).classList.add('jh-active');
-        // 切到「投递记录」时重算今日速览 / 进度概览（数据可能在其他标签期间变化）
-        if (tab.dataset.tab === 'logs') this.refreshLogsTab();
-      });
+      tab.addEventListener('click', () => this.activateTab(tab));
     });
 
     // 简历上传
@@ -232,6 +226,28 @@ const JHPanel = {
   },
   toggle() {
     this.el.classList.contains('jh-open') ? this.close() : this.open();
+  },
+
+  /** 切换到指定 Tab，并记忆当前页（用于导航重载后恢复停留页面） */
+  activateTab(tab) {
+    if (!tab || !tab.dataset) return;
+    this.el.querySelectorAll('.jh-tab').forEach((t) => t.classList.remove('jh-active'));
+    this.el.querySelectorAll('.jh-section').forEach((s) => s.classList.remove('jh-active'));
+    tab.classList.add('jh-active');
+    const sec = this.el.querySelector(`[data-sec="${tab.dataset.tab}"]`);
+    if (sec) sec.classList.add('jh-active');
+    // 记忆当前停留的页面，导航后 content script 重载时恢复
+    JH.set({ activeTab: tab.dataset.tab });
+    // 切到「投递记录」时重算今日速览 / 进度概览（数据可能在其他标签期间变化）
+    if (tab.dataset.tab === 'logs') this.refreshLogsTab();
+  },
+
+  /** content script 重新加载后，恢复上次停留的 Tab（默认「我的简历」兜底） */
+  async restoreTab() {
+    const { activeTab } = await JH.get(['activeTab']);
+    if (!activeTab) return;
+    const tab = this.el.querySelector(`.jh-tab[data-tab="${activeTab}"]`);
+    if (tab) this.activateTab(tab);
   },
 
   status(msg, type = 'info', autoHide = 5000) {
