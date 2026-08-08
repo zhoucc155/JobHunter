@@ -208,8 +208,9 @@ const JHCollector = {
     return false;
   },
 
-  /** 在当前搜索列表页采集岗位卡片（模拟真人滚动） */
-  async collectFromListPage(config, existingIds, deliveredIds, maxCount) {
+  /** 在当前搜索列表页采集岗位卡片（模拟真人滚动）
+   *  @param {function} [onFiltered] 列表级被某过滤项挡掉的岗位回调 (job, reasons[])，用于「已过滤」统计记录 */
+  async collectFromListPage(config, existingIds, deliveredIds, maxCount, onFiltered) {
     const collected = [];
     let noNewRounds = 0;
 
@@ -225,6 +226,11 @@ const JHCollector = {
         if (!job) continue;
         if (existingIds.has(job.id) || deliveredIds[job.id]) continue;   // 已采集/已投递去重
         if (collected.some((j) => j.id === job.id)) continue;
+        const reasons = this.filterReasons(job, config);
+        if (reasons.length) {
+          if (onFiltered) { try { await onFiltered(job, reasons); } catch (e) { /* 记录被挡岗位失败不阻断采集 */ } }
+          continue;
+        }
         if (!this.passBasicFilter(job, config)) continue;
         collected.push(job);
         existingIds.add(job.id);
@@ -445,6 +451,16 @@ const JHCollector = {
     if (excludes.some((kw) => text.includes(kw))) return false;
     if (config.filterHeadhunter && job.isHeadhunter) return false;
     return true;
+  },
+
+  /** 列表级被挡维度：返回被哪种过滤挡住的维度 key 数组（空=通过）。仅判列表级可判的维度（关键词、猎头） */
+  filterReasons(job, config) {
+    const reasons = [];
+    const excludes = (config.excludeKeywords || '').split(/[,，]/).map((s) => s.trim()).filter(Boolean);
+    const text = `${job.title} ${job.company}`;
+    if (excludes.some((kw) => text.includes(kw))) reasons.push('keyword');
+    if (config.filterHeadhunter && job.isHeadhunter) reasons.push('headhunter');
+    return reasons;
   },
 
   /** 详情页初筛后过滤（补采后调用）：HR活跃度、猎头 */

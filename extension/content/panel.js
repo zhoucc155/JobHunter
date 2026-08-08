@@ -123,6 +123,7 @@ const JHPanel = {
           <div class="jh-ovw-title">今日速览</div>
           <div class="jh-today">
             <div class="jh-today-card"><b id="jh-t-found">0</b><span>新发现</span></div>
+            <div class="jh-today-card"><b id="jh-t-filtered">0</b><span>已过滤</span></div>
             <div class="jh-today-card"><b id="jh-t-match">0</b><span>高匹配</span></div>
             <div class="jh-today-card"><b id="jh-t-delivered">0</b><span>已投递</span></div>
           </div>
@@ -460,7 +461,7 @@ const JHPanel = {
       const remain = Math.max(0, ctx.maxCount - ctx.listJobs.length); // 总上限按剩余配额分摊到各城市
       this.status(`多城市采集（${ctx.idx + 1}/${ctx.cities.length}）：${ctx.cities[ctx.idx]}`, 'info', 0);
 
-      const listRes = await JHCollector.collectFromListPage(config, existingIds, deliveredIds, remain);
+      const listRes = await JHCollector.collectFromListPage(config, existingIds, deliveredIds, remain, (job, reasons) => this.recordFiltered(job, reasons));
       if (listRes.risk) {
         await JH.set({ collectCtx: null, autoCollect: false });
         this.status('⚠️ 检测到安全验证，采集已熔断。请手动完成验证后重新点击采集', 'error', 0);
@@ -522,7 +523,7 @@ const JHPanel = {
     if (!sc.ok) this.status(`⚠️ 页面实际城市与配置不符（期望 ${city}），将按实际渲染城市采集`, 'warn', 6000);
     try {
       const existingIds = new Set(jobs.map((j) => j.id));
-      const listRes = await JHCollector.collectFromListPage(config, existingIds, deliveredIds, maxCount);
+      const listRes = await JHCollector.collectFromListPage(config, existingIds, deliveredIds, maxCount, (job, reasons) => this.recordFiltered(job, reasons));
       if (listRes.risk) {
         this.status('⚠️ 检测到安全验证，采集已熔断。请手动完成验证后再试', 'error', 0);
         return;
@@ -539,6 +540,27 @@ const JHPanel = {
   },
 
   /** 列表岗位 → 后台逐个详情补采 → 详情级过滤 → 合并存入 jobs */
+  // ==========================================================
+  // 记录被过滤掉的岗位（不进主岗位列表，仅用于「今日速览-已过滤」统计）
+  // 维度 key：salary(薪资) / keyword(关键词) / headhunter(猎头代招) / inactiveHR(7日不活跃HR)
+  // ==========================================================
+  async recordFiltered(job, reasons) {
+    if (!job || !job.id || !reasons || !reasons.length) return;
+    const { filteredJobs = [] } = await JH.get(['filteredJobs']);
+    if (filteredJobs.some((f) => f.id === job.id)) return; // 按 id 去重
+    filteredJobs.push({
+      id: job.id,
+      title: job.title || '',
+      company: job.company || '',
+      cityName: job.cityName || '',
+      reasons: reasons.slice(),
+      filteredAtTs: Date.now(),
+    });
+    // 控制体积：超过 800 条时丢弃最旧的
+    const trimmed = filteredJobs.length > 800 ? filteredJobs.slice(filteredJobs.length - 800) : filteredJobs;
+    await JH.set({ filteredJobs: trimmed });
+  },
+
   async enrichAndSave(listJobs, config, jobs, deliveredIds) {
     if (!listJobs.length) {
       this.status('未采到新岗位（可能都已采集/被过滤，试试翻页或换关键词）', 'warn');
@@ -554,6 +576,15 @@ const JHPanel = {
     const handledIds = new Set(liveJobs.map((j) => j.id));
     let kept = 0, filtered = 0, risk = false;
 
+    // 详情筛选的 reason → 过滤维度 key（用于「已过滤」统计记录）
+    const reasonToDim = (reason) => {
+      if (!reason) return null;
+      if (reason.includes('猎头')) return 'headhunter';
+      if (reason.includes('HR') || reason.includes('不活跃')) return 'inactiveHR';
+      if (reason.includes('过滤词') || reason.includes('JD')) return 'keyword';
+      return null;
+    };
+
     // 详情补采每完成一个岗位，background 会通过 COLLECT_PROGRESS 推送；
     // 通过详情筛选的岗位立即落库+渲染（不通过的不进面板，故无「先显示后移除」）。
     const onProgress = (msg) => {
@@ -563,9 +594,15 @@ const JHPanel = {
       const job = msg.job;
       if (!job || !job.id || handledIds.has(job.id)) return;
       const check = JHCollector.passDetailFilter(job, config);
-      if (!check.pass) { handledIds.add(job.id); filtered++; return; }
+      if (!check.pass) {
+        handledIds.add(job.id); filtered++;
+        const dim = reasonToDim(check.reason);
+        if (dim) this.recordFiltered(job, [dim]);
+        return;
+      }
       handledIds.add(job.id);
       job.salaryExcluded = JHCollector.isSalaryExcluded(job.salary, live.salaryRange, live.filterSalary);
+      if (job.salaryExcluded) this.recordFiltered(job, ['salary']);
       liveJobs.push(job);
       kept++;
       JH.set({ jobs: liveJobs });
@@ -584,9 +621,10 @@ const JHPanel = {
       for (const job of enriched) {
         if (!job || !job.id || handledIds.has(job.id)) continue;
         const check = JHCollector.passDetailFilter(job, config);
-        if (!check.pass) { handledIds.add(job.id); filtered++; continue; }
+        if (!check.pass) { handledIds.add(job.id); filtered++; const dim = reasonToDim(check.reason); if (dim) this.recordFiltered(job, [dim]); continue; }
         handledIds.add(job.id);
         job.salaryExcluded = JHCollector.isSalaryExcluded(job.salary, live.salaryRange, live.filterSalary);
+        if (job.salaryExcluded) this.recordFiltered(job, ['salary']);
         liveJobs.push(job);
         kept++;
       }
@@ -1111,7 +1149,7 @@ const JHPanel = {
   // 投递记录
   // ==========================================================
   async renderLogs(logs, stats) {
-    const { jobs = [], deliveredIds = {}, config = {} } = await JH.get(['jobs', 'deliveredIds', 'config']);
+    const { jobs = [], deliveredIds = {}, config = {}, filteredJobs = [] } = await JH.get(['jobs', 'deliveredIds', 'config', 'filteredJobs']);
 
     // 今日 00:00 时间戳，用于判定「今日」新增
     const t0 = new Date();
@@ -1123,6 +1161,17 @@ const JHPanel = {
     const honorExclusion = !!(config && config.filterSalary);
     const notExcluded = (j) => !honorExclusion || !j.salaryExcluded;
     const found = jobs.filter((j) => isToday(j.collectedAtTs) && notExcluded(j)).length;
+    // 已过滤：从独立存储 filteredJobs 统计（涵盖薪资/关键词/猎头/僵尸HR 全部维度），并按各开关门控，与采集配置保持一致
+    const dimEnabled = (dim) => {
+      switch (dim) {
+        case 'salary': return !!config.filterSalary;
+        case 'headhunter': return !!config.filterHeadhunter;
+        case 'inactiveHR': return !!config.filterInactiveHR;
+        case 'keyword': return !!(config.excludeKeywords && config.excludeKeywords.trim());
+        default: return false;
+      }
+    };
+    const filtered = filteredJobs.filter((f) => isToday(f.filteredAtTs) && f.reasons.some((d) => dimEnabled(d))).length;
     const match = jobs.filter((j) => isToday(j.analyzedAtTs) && typeof j.score === 'number' && j.score >= 60 && notExcluded(j)).length;
     const deliveredToday = Object.keys(deliveredIds).filter((id) => isToday(deliveredIds[id])).length;
 
@@ -1131,6 +1180,7 @@ const JHPanel = {
     const totalJobs = jobs.length;
 
     this.el.querySelector('#jh-t-found').textContent = found;
+    this.el.querySelector('#jh-t-filtered').textContent = filtered;
     this.el.querySelector('#jh-t-match').textContent = match;
     this.el.querySelector('#jh-t-delivered').textContent = deliveredToday;
 
