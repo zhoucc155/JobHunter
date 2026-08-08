@@ -434,6 +434,21 @@ const JHPanel = {
       if (await this.gotoSearch(url, `正在前往「${JHCollector.cityLabel(curCity)}」搜索页…`)) return;
     }
 
+    // 城市校验：BOSS 可能忽略 URL 的 ?city= 而按自身存储城市渲染，
+    // 故落地后抽样实际渲染城市，不符则自动切到目标城市再采（避免“搜深圳却采到上海”）。
+    const alreadyTried = !!(ctx.cityFixAttempts && ctx.cityFixAttempts[ctx.idx]);
+    const cityCheck = await JHCollector.ensureTargetCity(curCity, alreadyTried);
+    if (cityCheck.navigated) {
+      const nextUrl = JHCollector.buildSearchUrl(ctx.jobKeywords, curCity);
+      ctx.cityFixAttempts = Object.assign({}, ctx.cityFixAttempts, { [ctx.idx]: 1 });
+      await JH.set({ collectCtx: ctx, autoCollect: true, collectNav: { url: nextUrl, ts: Date.now() } });
+      this.status(`正在切换至「${JHCollector.cityLabel(curCity)}」重新采集…`, 'info', 0);
+      return;
+    }
+    if (!cityCheck.ok) {
+      this.status(`⚠️ 页面实际城市与配置不符（期望 ${curCity}），已尽力切换失败，将按实际渲染城市采集`, 'warn', 6000);
+    }
+
     this.collecting = true;
     await JH.set({ collectNav: null }); // 已成功落到目标搜索页，重置跳转计数
     const btn = this.el.querySelector('#jh-collect');
@@ -493,6 +508,17 @@ const JHPanel = {
     btn.innerHTML = '<span class="jh-spin"></span>采集中';
     btn.disabled = true;
     this.status(`正在采集「${config.jobKeywords} · ${JHCollector.cityLabel(city)}」搜索结果…请勿关闭本页`, 'info', 0);
+    // 城市校验（单城场景）：同多城逻辑，避免 BOSS 忽略 ?city= 渲染错城市
+    const singleUrl = JHCollector.buildSearchUrl(config.jobKeywords, city);
+    const { cityFixTried } = await JH.get('cityFixTried');
+    const singleTried = cityFixTried === singleUrl;
+    const sc = await JHCollector.ensureTargetCity(city, singleTried);
+    if (sc.navigated) {
+      await JH.set({ cityFixTried: singleUrl, autoCollect: true, collectNav: { url: singleUrl, ts: Date.now() } });
+      this.status(`正在切换至「${JHCollector.cityLabel(city)}」重新采集…`, 'info', 0);
+      return;
+    }
+    if (!sc.ok) this.status(`⚠️ 页面实际城市与配置不符（期望 ${city}），将按实际渲染城市采集`, 'warn', 6000);
     try {
       const existingIds = new Set(jobs.map((j) => j.id));
       const listRes = await JHCollector.collectFromListPage(config, existingIds, deliveredIds, maxCount);
@@ -501,6 +527,7 @@ const JHPanel = {
         return;
       }
       await this.enrichAndSave(listRes.jobs, config, jobs, deliveredIds);
+      await JH.set({ cityFixTried: null });
     } catch (e) {
       this.status('采集出错：' + (e.message || e), 'error');
     } finally {

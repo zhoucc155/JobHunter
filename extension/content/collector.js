@@ -91,6 +91,123 @@ const JHCollector = {
     }
   },
 
+  /**
+   * 从岗位位置文本提取城市名。
+   * BOSS 列表页位置多为「城市·区」或「城市 区」，取首个分隔段；若首段不是已知城市，
+   * 再试末段（个别岗位写成「区·城市」）；都取不到则取首段前 3 字兜底。
+   */
+  extractCityFromLocation(locText) {
+    const t = (locText || '').trim();
+    if (!t) return '';
+    const segs = t.split(/[·・・\s\-–—/]/).map((s) => s.trim()).filter(Boolean);
+    if (!segs.length) return '';
+    const known = (s) => !!JH_CITY_CODES[s];
+    if (known(segs[0])) return segs[0];
+    if (segs.length > 1 && known(segs[segs.length - 1])) return segs[segs.length - 1];
+    return segs[0].slice(0, 3);
+  },
+
+  /** 抽样当前页面岗位卡片的主流城市（取出现次数最多的城市名）；无卡片返回 '' */
+  sampleRenderedCity() {
+    const cards = JH.$$(JH_SELECTORS.jobCard);
+    const counts = {};
+    for (const card of cards) {
+      const cityEl = JH.$(JH_SELECTORS.jobCardCity, card);
+      const name = this.extractCityFromLocation(cityEl ? cityEl.textContent : '');
+      if (name) counts[name] = (counts[name] || 0) + 1;
+    }
+    let best = '', max = 0;
+    for (const k of Object.keys(counts)) {
+      if (counts[k] > max) { max = counts[k]; best = k; }
+    }
+    return best;
+  },
+
+  /**
+   * 校验当前搜索页「实际渲染的城市」是否为目标城市。
+   * BOSS 可能忽略 URL 的 ?city= 参数、按自身存储的城市渲染（账号定位/上次选择），
+   * 导致「搜深圳却渲染上海」。故落地后抽样岗位卡片城市，不符则尝试切到目标城市。
+   * @param {string} targetCityLabel 目标城市名（如「深圳」）；为空表示全国，不校验
+   * @param {boolean} alreadyTried 本轮采集已尝试过切换仍失败 → 不再重试，避免跳转死循环
+   * @returns {{ok:boolean, navigated:boolean}} ok=无需切或已确认匹配；navigated=已触发跳转（调用方应暂停采集、等重载后续跑）
+   */
+  async ensureTargetCity(targetCityLabel, alreadyTried) {
+    const label = (targetCityLabel || '').trim();
+    if (!label) return { ok: true, navigated: false };
+    await JH.waitFor(JH_SELECTORS.jobCard, 6000); // 等卡片渲染，避免页面未加载误判“无城市”
+    const rendered = this.sampleRenderedCity();
+    if (rendered && rendered === label) return { ok: true, navigated: false };
+    if (alreadyTried) {
+      console.warn('[JobHunter] 城市切换已尝试仍不匹配，按实际渲染城市继续：', rendered, '期望', label);
+      return { ok: false, navigated: false };
+    }
+    return this.switchCityViaSelector(label);
+  },
+
+  /**
+   * 尝试把 BOSS 当前城市切到 label：
+   * ① 优先操作 BOSS 城市选择器 UI（可观测）；② 失败则尝试写 BOSS 城市存储(cookie/localStorage)后全量重载。
+   * 均为 best-effort，任何一步失败都不抛错，交给调用方按实际渲染城市兜底采集。
+   */
+  async switchCityViaSelector(label) {
+    const code = this.cityCode(label);
+    // ① 操作 BOSS 城市选择器
+    const trigger = JH.$([
+      '.geek-city', '[class*="geek-city"]',
+      '.nav-city', '[class*="nav-city"]',
+      '.city-select', '[class*="city-select"]',
+      '.job-search-city', '[class*="city"]'
+    ]);
+    if (trigger) {
+      trigger.click();
+      await JH.randSleep(600, 1200);
+    }
+    const input = await JH.waitFor([
+      '.city-panel input', '[class*="city"] input',
+      'input[placeholder*="城市"]', 'input[placeholder*="city"]'
+    ], 4000);
+    if (input) {
+      await JH.humanType(input, label);
+      await JH.randSleep(500, 1000);
+      const items = JH.$$(['.city-panel li', '.city-list li', '[class*="city-item"]', '[class*="city-list"] li', 'li[class*="city"]']);
+      let target = null;
+      for (const it of items) {
+        const txt = (it.textContent || '').replace(/\s+/g, '').trim();
+        if (txt === label || txt.includes(label)) { target = it; break; }
+      }
+      if (target) {
+        const before = location.href;
+        target.click();
+        await this._waitNavigate(before, 8000);
+        const ok = this.sampleRenderedCity() === label;
+        return { ok, navigated: true };
+      }
+    }
+    // ② DOM 切换失败 → 写 BOSS 城市存储后全量重载
+    if (code) {
+      try {
+        document.cookie = `where_city=${code}; path=/; domain=.zhipin.com; max-age=86400`;
+        document.cookie = `where_cityname=${encodeURIComponent(label)}; path=/; domain=.zhipin.com; max-age=86400`;
+        try { localStorage.setItem('where_city', code); localStorage.setItem('where_cityname', label); } catch (e) { /* ignore */ }
+        location.href = location.href; // 重载，让 BOSS 读取新城市
+        await JH.randSleep(3000, 5000);
+        const ok = this.sampleRenderedCity() === label;
+        return { ok, navigated: true };
+      } catch (e) { /* ignore */ }
+    }
+    return { ok: false, navigated: false };
+  },
+
+  /** 等待页面地址变化（BOSS 切城市通常改 URL 的 city 参数） */
+  async _waitNavigate(beforeHref, timeoutMs) {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      if (location.href !== beforeHref) return true;
+      await JH.sleep(400);
+    }
+    return false;
+  },
+
   /** 在当前搜索列表页采集岗位卡片（模拟真人滚动） */
   async collectFromListPage(config, existingIds, deliveredIds, maxCount) {
     const collected = [];
@@ -160,6 +277,7 @@ const JHCollector = {
       salary: this.sanitizeSalary(salaryEl ? salaryEl.textContent.trim() : ''),
       company,
       city: cityEl ? cityEl.textContent.trim() : '',
+      cityName: this.extractCityFromLocation(cityEl ? cityEl.textContent.trim() : ''),
       hrName: hrRaw.split(/[·\s]/)[0] || '',
       hrTitle: hrRaw,
       jd: '', hrActive: '', isHeadhunter,
@@ -229,6 +347,7 @@ const JHCollector = {
     const lines = [];
     lines.push('=== JobHunter 选择器诊断报告 ===');
     lines.push('URL: ' + location.href.split('?')[0]);
+    lines.push('抽样渲染城市: ' + (this.sampleRenderedCity() || '(无卡片)'));
     lines.push('时间: ' + new Date().toLocaleString('zh-CN'));
 
     // 1. 卡片选择器命中情况
