@@ -244,12 +244,28 @@ const JHPanel = {
     if (tab.dataset.tab === 'logs') this.refreshLogsTab();
   },
 
-  /** content script 重新加载后，恢复上次停留的 Tab（默认「我的简历」兜底） */
+  /** 外站进入→默认「我的简历」；站内跳转→恢复上次停留的 Tab（Tab 记忆） */
   async restoreTab() {
+    if (!this._isFromBoss()) {
+      // 从外站 / 书签 / 地址栏进入：回到首页「我的简历」，并作为本次会话起点记忆
+      const def = this.el.querySelector('.jh-tab[data-tab="resume"]');
+      if (def) this.activateTab(def);
+      return;
+    }
+    // 从 BOSS 站内页面跳转而来（如岗位采集翻页、投递打开会话）：恢复上次停留的 Tab
     const { activeTab } = await JH.get(['activeTab']);
     if (!activeTab) return;
     const tab = this.el.querySelector(`.jh-tab[data-tab="${activeTab}"]`);
     if (tab) this.activateTab(tab);
+  },
+
+  /** 判断本次进入是否来自 BOSS 站内跳转（而非外站 / 书签 / 直接输入） */
+  _isFromBoss() {
+    try {
+      const r = document.referrer || '';
+      if (!r) return false;
+      return new URL(r).hostname.endsWith('zhipin.com');
+    } catch (e) { return false; }
   },
 
   status(msg, type = 'info', autoHide = 5000) {
