@@ -57,15 +57,55 @@ JH.pageText = () => {
   return t;
 };
 
-/** 等待某元素出现（超时返回 null） */
-JH.waitFor = async (selArr, timeoutMs = 10000, root = document) => {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    const el = JH.$(selArr, root);
-    if (el) return el;
-    await JH.sleep(300);
-  }
-  return null;
+/**
+ * 等待某元素出现（超时返回 null）。
+ *
+ * 【为什么不用 setTimeout 轮询】详情页是 background 以 active:false 打开的**隐藏标签页**，
+ * Chrome 会把隐藏页里的 setTimeout 钳制到「最快每秒一次」。原来每 150ms 轮询一次，实际
+ * 每轮要等满 1 秒 —— 元素早就出来了还得干等到整秒对齐。
+ * MutationObserver 的回调由 DOM 变更直接派发、**不走定时器、不受节流**，元素一插入立刻接住。
+ *
+ * 超时兜底仍用 setTimeout（8 秒量级，1 秒粒度无所谓），到点前再查一次再返回 null。
+ * MutationObserver 构造失败时自动回退到轮询，保证任何环境都能用。
+ */
+JH.waitFor = (selArr, timeoutMs = 10000, root = document) => {
+  const hit = JH.$(selArr, root);
+  if (hit) return Promise.resolve(hit);
+
+  return new Promise((resolve) => {
+    let done = false;
+    let mo = null;
+    let timer = null;
+    const finish = (el) => {
+      if (done) return;
+      done = true;
+      if (mo) { try { mo.disconnect(); } catch (e) {} }
+      if (timer) clearTimeout(timer);
+      resolve(el);
+    };
+
+    try {
+      mo = new MutationObserver(() => {
+        const el = JH.$(selArr, root);
+        if (el) finish(el);
+      });
+      mo.observe(root === document ? (document.documentElement || document) : root,
+                 { childList: true, subtree: true });
+    } catch (e) { mo = null; }
+
+    // MutationObserver 不可用时的兜底轮询（正常 Chrome 环境走不到这里）
+    if (!mo) {
+      (async () => {
+        while (!done) {
+          const el = JH.$(selArr, root);
+          if (el) return finish(el);
+          await JH.sleep(200);
+        }
+      })();
+    }
+
+    timer = setTimeout(() => finish(JH.$(selArr, root)), timeoutMs);
+  });
 };
 
 /** chrome.storage.local 读 */
@@ -79,6 +119,25 @@ JH.send = (msg) => new Promise((r) => {
   try { chrome.runtime.sendMessage(msg, (resp) => r(resp)); } catch (e) { r(null); }
 });
 
+/** 记录最近一次异常结构到 storage，供面板「诊断」读回（BOSS 反调试无法用 F12 时尤其有用） */
+JH.setLastError = (info, ctx) => {
+  try {
+    const entry = { ts: Date.now(), ctx: ctx || '' };
+    if (info instanceof Error) {
+      entry.kind = 'Error';
+      entry.name = info.name || 'Error';
+      entry.message = info.message || String(info);
+      entry.stack = (info.stack || '').split('\n').slice(0, 4).join('\n');
+    } else {
+      entry.kind = 'object';
+      entry.message = (info && (info.message || String(info))) || String(info);
+      try { entry.raw = JSON.parse(JSON.stringify(info)); } catch (e) { entry.raw = String(info); }
+    }
+    JH.set({ jhLastError: entry });
+  } catch (e) { /* storage 不可用时忽略 */ }
+};
+JH.getLastError = () => JH.get(['jhLastError']).then((r) => r.jhLastError || null);
+
 /** 风控检测：页面是否出现验证码/安全校验 */
 JH.riskDetected = () => {
   if (JH_RISK_URL_PATTERNS.some((p) => location.href.includes(p))) return true;
@@ -87,13 +146,28 @@ JH.riskDetected = () => {
   return false;
 };
 
-/** 模拟真人平滑滚动一段距离 */
-JH.humanScroll = async (distance) => {
-  const steps = JH.rand(6, 12);
+/**
+ * 模拟真人平滑滚动一段距离。
+ * @param {number} distance 滚动总距离(px)
+ * @param {object} [pace] 可选节奏参数。不传时与原行为完全一致（6~12 步、每步 80~260ms），
+ *                        投递流程与列表页滚动均沿用默认值，勿改；
+ *                        仅详情页补采传快速档以提速（步数少、间隔短，但保留分步+抖动的真人特征）。
+ * @param {number} [pace.minSteps=6] @param {number} [pace.maxSteps=12]
+ * @param {number} [pace.minGap=80]  @param {number} [pace.maxGap=260]
+ * @param {boolean} [pace.skipLastGap=false] 跳过最后一步之后的等待。
+ *        隐藏标签页里每次 sleep 都被 Chrome 钳到 ≥1 秒，滚完最后一下再干等 1 秒毫无意义。
+ *        **默认关闭**：投递流程与列表页滚动行为一字不变，仅详情页补采开启。
+ */
+JH.humanScroll = async (distance, pace) => {
+  const p = pace || {};
+  const steps = JH.rand(p.minSteps || 6, p.maxSteps || 12);
+  const minGap = p.minGap || 80;
+  const maxGap = p.maxGap || 260;
   const per = distance / steps;
   for (let i = 0; i < steps; i++) {
     window.scrollBy(0, per + JH.rand(-20, 20));
-    await JH.randSleep(80, 260);
+    if (p.skipLastGap && i === steps - 1) break;
+    await JH.randSleep(minGap, maxGap);
   }
 };
 

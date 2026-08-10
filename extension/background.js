@@ -189,6 +189,7 @@ let collectAborted = false;
 async function runDetailCollection(pendingJobs, notifyTabId) {
   collectAborted = false;
   const results = [];
+
   for (let i = 0; i < pendingJobs.length; i++) {
     if (collectAborted) break;
     const job = pendingJobs[i];
@@ -208,7 +209,7 @@ async function runDetailCollection(pendingJobs, notifyTabId) {
       // 熔断
       await sSet({ collectStatus: { state: 'risk', msg: '检测到安全验证，已熔断停止。请手动打开BOSS完成验证后再试。' } });
       notify(notifyTabId, { type: 'COLLECT_RISK' });
-      return results;
+      return { results };
     }
     if (detail) {
       const wasHunter = job.isHeadhunter; // 列表级已判定猎头则保留（详情级与列表级取"或"）
@@ -217,11 +218,13 @@ async function runDetailCollection(pendingJobs, notifyTabId) {
       results.push(job);
       notify(notifyTabId, { type: 'COLLECT_PROGRESS', done: results.length, total: pendingJobs.length, job });
     }
-    // 真人节奏：岗位详情之间随机停 3~8 秒
-    await sleep(rand(3000, 8000));
+    // 真人节奏：岗位详情之间随机停 1.5~3.5 秒（平衡档，原 3~8 秒）。
+    // 这是风控最易观测的频次指标，若日后出现验证码，优先把这里调回 3000~8000。
+    const gap = rand(1500, 3500);
+    await sleep(gap);
   }
   await sSet({ detailTask: null });
-  return results;
+  return { results };
 }
 
 function waitDetailResult(jobId, timeout) {
@@ -798,7 +801,7 @@ async function runDelivery(job, greeting, notifyTabId, opts = {}) {
       return done({ ok: false, stage: 'risk', reason: '检测到安全验证，已停止' });
     }
 
-    await sleep(rand(1500, 3000)); // 模拟真人阅读 JD
+    await sleep(rand(800, 1800)); // 模拟真人阅读 JD（提速：压缩停顿但保留真人感，不增风控）
 
     // 3) 读取「立即沟通 / 继续沟通」按钮状态：
     //    - 按钮是「立即沟通」→ 该 HR 尚无会话（首次沟通），必须先【受信任点击】触发 BOSS 建会话，
@@ -891,7 +894,7 @@ async function runDelivery(job, greeting, notifyTabId, opts = {}) {
     const chars = Array.from(greeting);
     let i = 0;
     while (i < chars.length) {
-      const step = rand(1, 3);
+      const step = rand(3, 5); // 提速：3-5 字/块，块数减半，节奏更似真人连打（前台无节流，不增风控）
       const chunk = chars.slice(i, i + step).join('');
       const r = await inject(tab.id, 'jhTypeChunk', [chunk]);
       if (!r || !r.ok) await inject(tab.id, 'jhFindInput', []);
@@ -907,7 +910,7 @@ async function runDelivery(job, greeting, notifyTabId, opts = {}) {
       await inject(tab.id, 'jhTypeFull', [greeting || '']);
     }
 
-    await sleep(rand(500, 1200));
+    await sleep(rand(300, 800)); // 提速：发送前停顿压缩，仍保留"想一下"的拟人感，不增风控
 
     // 6) 发送（回车或发送按钮）
     await inject(tab.id, 'jhSend', []);

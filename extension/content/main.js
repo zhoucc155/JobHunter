@@ -7,15 +7,21 @@
 // ============================================================
 
 (async function jhMain() {
-  // 等页面稳定
-  await JH.sleep(800);
-
+  // 先读状态判角色，再决定要不要「等页面稳定」。
+  // 顺序不能反：这 800ms 在 background 打开的**隐藏**详情页里会被 Chrome 的定时器节流
+  // 钳到 ≥1 秒（隐藏页 setTimeout 最快每秒一次），而采集本身有 waitFor 事件驱动兜底，
+  // 这一秒纯属白烧。故只让采集标签页跳过，其余页面（含用户手开的详情页）行为不变。
   const { detailTask, autoCollect, collectNav } = await JH.get(['detailTask', 'autoCollect', 'collectNav']);
   const href = location.href;
   const isDetail = href.includes('job_detail');
+  const isCollectTab = !!(isDetail && detailTask && href.includes(detailTask.jobId)
+                          && Date.now() - detailTask.ts < 60000);
+
+  // 等页面稳定（采集用的后台详情页除外）
+  if (!isCollectTab) await JH.sleep(800);
 
   // ---------- 角色1：采集详情页 ----------
-  if (isDetail && detailTask && href.includes(detailTask.jobId) && Date.now() - detailTask.ts < 60000) {
+  if (isCollectTab) {
     await JHCollector.runDetailExtraction(detailTask);
     return; // 工作标签页不挂面板
   }

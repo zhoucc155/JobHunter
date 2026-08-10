@@ -538,7 +538,8 @@ const JHPanel = {
       this.status(`列表采集完成（共 ${ctx.listJobs.length} 个，跨 ${ctx.cities.length} 城），正在补采 JD…`, 'info', 0);
       await this.enrichAndSave(ctx.listJobs, config, jobs, deliveredIds, { scanned: ctx.scanned, duplicate: ctx.duplicate, filteredList: ctx.filteredList }, oldFiltered, filterSig);
     } catch (e) {
-      this.status('采集出错：' + (e.message || e), 'error');
+      JH.setLastError(e, 'collectMulti');
+      this.status('采集出错：' + (e.message || e) + '（已记录，点「诊断」可查看详情）', 'error');
     } finally {
       this.collecting = false;
       btn.innerHTML = '岗位采集';
@@ -578,7 +579,8 @@ const JHPanel = {
       await this.enrichAndSave(listRes.jobs, config, jobs, deliveredIds, { scanned: listRes.scanned || 0, duplicate: listRes.duplicate || 0, filteredList: listRes.filteredList || 0 }, oldFiltered, filterSig);
       await JH.set({ cityFixTried: null });
     } catch (e) {
-      this.status('采集出错：' + (e.message || e), 'error');
+      JH.setLastError(e, 'collectSingle');
+      this.status('采集出错：' + (e.message || e) + '（已记录，点「诊断」可查看详情）', 'error');
     } finally {
       this.collecting = false;
       btn.innerHTML = '岗位采集';
@@ -691,7 +693,11 @@ const JHPanel = {
 
     try {
       const resp = await JH.send({ type: 'COLLECT_DETAILS', jobs: listJobs });
-      const enriched = (resp && resp.results) || [];
+      const enriched = Array.isArray(resp && resp.results) ? resp.results : [];
+      if (!enriched.length && resp && resp.results !== undefined) {
+        console.error('[JobHunter] COLLECT_DETAILS 返回异常结构:', resp);
+        JH.setLastError({ message: 'COLLECT_DETAILS 返回异常结构', raw: resp }, 'enrich');
+      }
 
       // 兜底对账：若个别 COLLECT_PROGRESS 消息丢失，用最终 results 补齐通过但未显示的岗位
       for (const job of enriched) {
@@ -749,6 +755,19 @@ const JHPanel = {
     } else {
       return this.status('请在 BOSS 的岗位详情页（查投递小窗问题）、岗位列表页（查采集问题）或聊天页（查补发问题）点「诊断」', 'warn', 8000);
     }
+    // 附带上次错误记录（若有），让一闪而过的异常也能从诊断报告读回
+    try {
+      const lastErr = await JH.getLastError();
+      if (lastErr) {
+        const t = new Date(lastErr.ts).toLocaleString();
+        report += `\n\n========== 上次错误记录（${t} · ${lastErr.ctx}）==========\n`
+          + `类型: ${lastErr.kind}\n`
+          + `消息: ${lastErr.message}\n`
+          + (lastErr.name ? `名称: ${lastErr.name}\n` : '')
+          + (lastErr.stack ? `堆栈(前4行):\n${lastErr.stack}\n` : '')
+          + (lastErr.raw ? `原始结构:\n${JSON.stringify(lastErr.raw, null, 2)}\n` : '');
+      }
+    } catch (e) { /* 不影响诊断主流程 */ }
     let copied = false;
     try {
       await navigator.clipboard.writeText(report);
@@ -974,6 +993,7 @@ const JHPanel = {
     if (!this.deliverQueue.length) return this.status('选中岗位均已投递过', 'info');
 
     this.delivering = true;
+    this._roundStats = { success: 0, skip: 0, fail: 0 };
     this._autoCount = 0;
     this._nextRestAt = JH.rand(4, 7);
     this._pendingGreeting = null;
@@ -987,8 +1007,7 @@ const JHPanel = {
       this.delivering = false;
       this._pendingGreeting = null;
       this._pendingGreetingJobId = null;
-      const { stats = {} } = await JH.get(['stats']);
-      this.status(`本轮投递结束 ✓ 累计：成功 ${stats.success || 0}｜跳过 ${stats.skip || 0}｜失败 ${stats.fail || 0}`, 'ok', 0);
+      this.status(`投递结束 ✓ 本轮成功 ${this._roundStats.success} | 跳过 ${this._roundStats.skip} | 失败 ${this._roundStats.fail}`, 'ok', 8000);
       await this.refreshLogsTab();
       return;
     }
@@ -1080,6 +1099,7 @@ const JHPanel = {
       e.stopPropagation(); // 阻止冒泡到 document 的全局收起监听（移除小窗后 e.target 已脱离 DOM，会被误判为"点面板外"）
       if (autoMode) this.clearAutoTimer();
       await JH.appendLog({ jobId: job.id, title: job.title, company: job.company, result: 'skip', reason: '用户跳过' });
+      this._roundStats.skip++;
       this.deliverQueue.shift();
       this.removeConfirmCard();
       await this.nextDeliverConfirm();
@@ -1137,6 +1157,7 @@ const JHPanel = {
       // 自动模式：文案为空（如被清空）视为跳过，避免卡死队列
       if (this.autoLoop) {
         await JH.appendLog({ jobId: job.id, title: job.title, company: job.company, result: 'skip', reason: '自动模式文案为空，已跳过' });
+        this._roundStats.skip++;
         this.deliverQueue.shift();
         const { jobs = [] } = await JH.get(['jobs']);
         this.renderJobs(jobs);
@@ -1175,9 +1196,11 @@ const JHPanel = {
         result: 'success',
         reason: resp.imageNote ? `打招呼文案已发送（${resp.imageNote}）` : '打招呼文案已发送'
       });
+      this._roundStats.success++;
       this.status(`「${job.title}」投递成功 ✓`, 'ok');
     } else if (resp && resp.skip) {
       await JH.appendLog({ jobId: job.id, title: job.title, company: job.company, result: 'skip', reason: resp.reason });
+      this._roundStats.skip++;
       deliveredIds[job.id] = Date.now();
       await JH.set({ deliveredIds });
       this.status(`「${job.title}」已跳过：${resp.reason}`, 'warn');
@@ -1187,6 +1210,7 @@ const JHPanel = {
         this.deliverQueue = [];
         this.delivering = false;
         await JH.appendLog({ jobId: job.id, title: job.title, company: job.company, result: 'fail', reason: '触发安全验证，已熔断' });
+        this._roundStats.fail++;
         this.renderJobs(jobs);
         return this.status('⚠️ 检测到安全验证，投递已全部熔断停止！请手动打开BOSS完成验证，今天建议不要再自动投递', 'error', 0);
       }
@@ -1194,6 +1218,7 @@ const JHPanel = {
       if (idx >= 0) jobs[idx].status = 'failed';
       await JH.set({ jobs });
       await JH.appendLog({ jobId: job.id, title: job.title, company: job.company, result: 'fail', reason: (resp && (resp.reason || resp.error)) || '未知错误' });
+      this._roundStats.fail++;
       this.status(`「${job.title}」投递失败：${(resp && (resp.reason || resp.error)) || '未知错误'}`, 'error', 8000);
     }
 
@@ -1213,14 +1238,14 @@ const JHPanel = {
 
         if (this._autoCount >= (this._nextRestAt || 5)) {
           // 连续投递若干个后，模拟真人歇一会儿（时长与触发点均随机）
-          const gap = JH.rand(60, 150);
+          const gap = JH.rand(40, 90); // 提速(温和收间隔)：长休 60-150s → 40-90s，仍保留拟人长休
           this.status(`已连续自动投递 ${this._autoCount} 个，自动休息约 ${Math.round(gap / 60)} 分钟后继续…（可随时点「停止投递」）`, 'info', 0);
           await JH.sleep(gap * 1000);
           this._nextRestAt = this._autoCount + JH.rand(4, 7);
         } else {
           // 打散的基础间隔：主流 14~26s，偶尔分心 26~42s，偶尔手顺 10~16s（突发更像人）
           const r = Math.random();
-          const gap = r < 0.6 ? JH.rand(14, 26) : r < 0.85 ? JH.rand(26, 42) : JH.rand(10, 16);
+          const gap = r < 0.6 ? JH.rand(11, 19) : r < 0.85 ? JH.rand(20, 32) : JH.rand(8, 12); // 提速(温和收间隔)：主流 14-26→11-19 / 分心 26-42→20-32 / 手顺 10-16→8-12
           this.status(`为保护账号，${gap} 秒后自动进入下一个岗位…`, 'info', 0);
           await JH.sleep(gap * 1000);
         }

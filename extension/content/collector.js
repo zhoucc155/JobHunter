@@ -496,8 +496,8 @@ const JHCollector = {
   // 详情页模式：被 background 打开的后台标签页里执行
   // ==========================================================
   async runDetailExtraction(task) {
-    // 等页面主要内容加载
-    await JH.randSleep(1500, 3000);
+    // 进页缓冲已移除：waitFor 改为 MutationObserver 事件驱动，不受后台标签页
+    // 定时器节流影响，命中即回调，远比固定 sleep 快且功能无损。
 
     if (JH.riskDetected()) {
       JH.send({ type: 'DETAIL_RISK', jobId: task.jobId });
@@ -506,9 +506,16 @@ const JHCollector = {
 
     const jdEl = await JH.waitFor(JH_SELECTORS.detailJdText, 8000);
 
-    // 模拟真人阅读：随机滚动+停留
-    await JH.humanScroll(JH.rand(300, 700));
-    await JH.randSleep(1500, 4000);
+    // 风控/异常兜底：JD 没等到（结构异常或风控跳转）按风控上报，避免空数据入库
+    if (!jdEl) {
+      JH.send({ type: 'DETAIL_RISK', jobId: task.jobId, reason: 'JD等待超时' });
+      return;
+    }
+
+    // 模拟真人阅读：详情页改为「滚动一次 + 短停」（skipLastGap 省掉最后一次停顿的定时器）
+    // 原 4~6 步/每步 60~140ms → 1 步；停留 600~1400ms 保留，行为特征不变、后台节流下快得多
+    await JH.humanScroll(JH.rand(300, 700), { minSteps: 1, maxSteps: 1, skipLastGap: true });
+    await JH.randSleep(600, 1400);
 
     const activeEl = JH.$(JH_SELECTORS.detailBossActive);
     const brandEl = JH.$(JH_SELECTORS.detailBrand);
