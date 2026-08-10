@@ -270,10 +270,6 @@ const JHCollector = {
     if (url.startsWith('/')) url = 'https://www.zhipin.com' + url;
     if (!url.includes('job_detail')) return null;
 
-    // 从 URL 提取加密岗位 ID
-    const m = url.match(/job_detail\/([^.]+)\.html/);
-    const id = m ? m[1] : url;
-
     const titleText = title.textContent.trim();
     const salaryEl = JH.$(JH_SELECTORS.jobCardSalary, card);
     const cityEl = JH.$(JH_SELECTORS.jobCardCity, card);
@@ -282,6 +278,13 @@ const JHCollector = {
     // 招聘者信息原文，如"王女士·猎头顾问"或"李先生·HR"
     const hrRaw = hrEl ? hrEl.textContent.trim().replace(/\s+/g, '') : '';
     const company = this.extractCompany(card, titleText);
+
+    // 主标识用 BOSS 加密串（每个列表项独立，刷新后可能变化，但作为本次会话内唯一 key）；
+    // fp 为稳定指纹，仅用于「已投递状态同步」与「累计投递统计去重」，不作为去重 key，
+    // 避免把同公司同职位同城市的不同岗位（不同 HR/不同时间发布）误判为同一岗而全部跳过。
+    const m = url.match(/job_detail\/([^.]+)\.html/);
+    const id = m ? m[1] : url;
+    const fp = JH.stableId(company, titleText, cityEl ? cityEl.textContent.trim() : '');
 
     // 列表级猎头识别：① 卡片左上角"猎头"角标（最可靠） ② 招聘者头衔含猎头特征词 ③ 公司名是人力资源/人才服务类
     const hunterIcon = JH.$(JH_SELECTORS.jobCardHunterIcon, card);
@@ -292,6 +295,7 @@ const JHCollector = {
 
     return {
       id,
+      fp,
       url: url.split('?')[0],
       title: titleText,
       salary: this.sanitizeSalary(salaryEl ? salaryEl.textContent.trim() : ''),

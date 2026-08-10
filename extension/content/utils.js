@@ -244,3 +244,25 @@ JH.incDailyCount = async () => {
   await JH.set({ dailyCount: { date: today, count } });
   return count;
 };
+
+/**
+ * 稳定岗位指纹：BOSS 列表链接里的加密串（job_detail/XXXX.html）会随会话/刷新变化，
+ * 但「公司 + 职位 + 城市」组合稳定。用它当 job.id，跨采集/跨会话去重才不会把同一岗位
+ * 当成不同岗（否则已投递的会被重复采集、deliveredIds 与 jobs.status 永远对不齐）。
+ * 投递环节靠 job.url（原加密串）打开会话，与此 id 无关。
+ * @returns {string} 形如 'fp_<base36哈希>'
+ */
+JH.stableId = (company, title, city) => {
+  const norm = (s) => String(s == null ? '' : s).trim().toLowerCase().replace(/\s+/g, '');
+  const key = norm(company) + '|' + norm(title) + '|' + norm(city);
+  // cyrb53 字符串哈希：稳定 53 位整数，跨会话一致；转 base36 得短指纹
+  let h1 = 0xdeadbeef ^ key.length, h2 = 0x41c6ce57 ^ key.length;
+  for (let i = 0; i < key.length; i++) {
+    const ch = key.charCodeAt(i);
+    h1 = Math.imul(h1 ^ ch, 2654435761);
+    h2 = Math.imul(h2 ^ ch, 1597334677);
+  }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  return 'fp_' + (h2 >>> 0).toString(36) + (h1 >>> 0).toString(36);
+};

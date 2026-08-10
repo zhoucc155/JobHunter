@@ -330,6 +330,9 @@ const JHPanel = {
     }
     if (normalized) await JH.set({ jobs });
 
+    // 方案B 数据迁移：不稳定加密串 id → 稳定指纹，并重建 deliveredIds、合并裂条（幂等）
+    await this.migrateStableIds(jobs);
+
     // 恢复「自动循环投递」偏好
     const { autoLoop = false } = await JH.get(['autoLoop']);
     this.el.querySelector('#jh-auto-loop').checked = !!autoLoop;
@@ -341,6 +344,49 @@ const JHPanel = {
     // 岗位 + 日志
     this.renderJobs(jobs);
     await this.renderLogs(logs, stats);
+  },
+
+  /**
+   * 双 key 数据迁移（幂等）：
+   * - 主 key `job.id` 用 BOSS 加密串（每个列表项独立，刷新后可能变，但本次会话内唯一）；
+   * - 辅助 `job.fp` 用「公司+职位+城市」稳定指纹，仅做「已投递状态同步」与「累计统计去重」。
+   * 迁移会把方案B 误用的 fp id 恢复成 url 里的加密串，并按 fp 重建 deliveredFps（用于统计/状态）。
+   */
+  async migrateStableIds(jobs) {
+    const { deliveredIds = {}, deliveredFps = {}, idMigrated } = await JH.get(['deliveredIds', 'deliveredFps', 'idMigrated']);
+    // 已是双 key 结构（jobs.id 不再以 fp_ 开头）→ 跳过
+    const hasFpId = jobs.some((j) => j.id && j.id.startsWith('fp_'));
+    if (!hasFpId && idMigrated) return;
+
+    const newDeliveredIds = {};
+    const newDeliveredFps = {};
+    Object.assign(newDeliveredFps, deliveredFps); // 保留历史 fp 记录
+
+    for (const j of jobs) {
+      const m = (j.url || '').match(/job_detail\/([^.]+)\.html/);
+      const encId = m ? m[1] : null;
+      const fp = JH.stableId(j.company, j.title, j.city);
+      j.fp = fp;
+      if (encId) j.id = encId; // 恢复主 key 为加密串
+
+      if (j.status === 'delivered') {
+        if (encId) newDeliveredIds[encId] = j.deliveredAt || Date.now();
+        newDeliveredFps[fp] = j.deliveredAt || Date.now();
+      }
+    }
+    // 旧 deliveredIds（方案B 迁移后全是 fp key，或早期残留加密串 key）归并
+    for (const oldKey of Object.keys(deliveredIds)) {
+      if (oldKey.startsWith('fp_')) {
+        newDeliveredFps[oldKey] = deliveredIds[oldKey]; // fp key 转移到 deliveredFps
+        const j = jobs.find((x) => x.fp === oldKey && x.id && !x.id.startsWith('fp_'));
+        if (j) newDeliveredIds[j.id] = deliveredIds[oldKey];
+      } else {
+        newDeliveredIds[oldKey] = deliveredIds[oldKey]; // 加密串 key 保留
+        const j = jobs.find((x) => x.id === oldKey);
+        if (j) newDeliveredFps[j.fp] = deliveredIds[oldKey];
+      }
+    }
+    await JH.set({ jobs, deliveredIds: newDeliveredIds, deliveredFps: newDeliveredFps, idMigrated: true });
   },
 
   async saveResume() {
@@ -1176,7 +1222,7 @@ const JHPanel = {
 
     const resp = await JH.send({ type: 'DELIVER_ONE', job, greeting, image: this.imageMode });
 
-    const { jobs = [], deliveredIds = {} } = await JH.get(['jobs', 'deliveredIds']);
+    const { jobs = [], deliveredIds = {}, deliveredFps = {} } = await JH.get(['jobs', 'deliveredIds', 'deliveredFps']);
     const idx = jobs.findIndex((j) => j.id === job.id);
 
     if (resp && resp.ok) {
@@ -1189,7 +1235,9 @@ const JHPanel = {
         delete jobs[idx].resendTries;
       }
       deliveredIds[job.id] = Date.now();
-      await JH.set({ jobs, deliveredIds });
+      const fp = job.fp || JH.stableId(job.company, job.title, job.city);
+      deliveredFps[fp] = deliveredIds[job.id];
+      await JH.set({ jobs, deliveredIds, deliveredFps });
       await JH.incDailyCount();
       await JH.appendLog({
         jobId: job.id, title: job.title, company: job.company,
@@ -1202,7 +1250,9 @@ const JHPanel = {
       await JH.appendLog({ jobId: job.id, title: job.title, company: job.company, result: 'skip', reason: resp.reason });
       this._roundStats.skip++;
       deliveredIds[job.id] = Date.now();
-      await JH.set({ deliveredIds });
+      const fp = job.fp || JH.stableId(job.company, job.title, job.city);
+      deliveredFps[fp] = deliveredIds[job.id];
+      await JH.set({ deliveredIds, deliveredFps });
       this.status(`「${job.title}」已跳过：${resp.reason}`, 'warn');
     } else {
       if (resp && resp.stage === 'risk') {
@@ -1262,7 +1312,7 @@ const JHPanel = {
   // 投递记录
   // ==========================================================
   async renderLogs(logs, stats) {
-    const { jobs = [], deliveredIds = {}, config = {}, filteredJobs = [] } = await JH.get(['jobs', 'deliveredIds', 'config', 'filteredJobs']);
+    const { jobs = [], deliveredIds = {}, deliveredFps = {}, config = {}, filteredJobs = [] } = await JH.get(['jobs', 'deliveredIds', 'deliveredFps', 'config', 'filteredJobs']);
 
     // 今日 00:00 时间戳，用于判定「今日」新增
     const t0 = new Date();
@@ -1286,10 +1336,10 @@ const JHPanel = {
     };
     const filtered = filteredJobs.filter((f) => isToday(f.filteredAtTs) && f.reasons.some((d) => dimEnabled(d))).length;
     const match = jobs.filter((j) => isToday(j.analyzedAtTs) && typeof j.score === 'number' && j.score >= 60 && notExcluded(j)).length;
-    const deliveredToday = Object.keys(deliveredIds).filter((id) => isToday(deliveredIds[id])).length;
+    const deliveredToday = Object.keys(deliveredFps).filter((id) => isToday(deliveredFps[id])).length;
 
-    // 进度概览（环形图：累计投递 / 总岗位）
-    const totalDelivered = Object.keys(deliveredIds).length;
+    // 进度概览（环形图：累计投递 / 总岗位）按 fp 去重，避免同岗位多次加密串重复计数
+    const totalDelivered = Object.keys(deliveredFps).length;
     const totalJobs = jobs.length;
 
     this.el.querySelector('#jh-t-found').textContent = found;
