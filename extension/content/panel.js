@@ -465,6 +465,13 @@ const JHPanel = {
       return this.status('请先在「采集配置」中填写意向岗位并保存', 'warn');
     }
 
+    // 多关键词（/ 或 , 分隔）→ 走统一多关键词采集（跨关键词共享 maxCount + fp 去重）
+    const keywords = this.splitKeywords(config.jobKeywords);
+    const { collectCtx: _mc } = await JH.get(['collectCtx']);
+    if (keywords.length > 1 || (_mc && _mc.keywords && _mc.keywords.length > 1)) {
+      return this.startCollectMultiKeyword();
+    }
+
     const cities = (config.cities || '').split(/[,，]/).map((s) => s.trim()).filter(Boolean);
     const maxCount = config.collectCount || 20;
 
@@ -590,6 +597,169 @@ const JHPanel = {
       this.collecting = false;
       btn.innerHTML = '岗位采集';
       btn.disabled = false;
+    }
+  },
+
+  /** 按 / 、, 、， 拆分意向岗位关键词为多个独立 query（实现「多关键词 OR 轮询采集」） */
+  splitKeywords(raw) {
+    const s = (raw || '').trim();
+    if (!s) return [];
+    const parts = s.split(/[\/,，]+/).map((x) => x.trim()).filter(Boolean);
+    return parts.length ? parts : [s];
+  },
+
+  /** 多关键词采集入口：把整串关键词拆成多个 query，逐个搜索、跨词共享 maxCount 与 fp 去重 */
+  async startCollectMultiKeyword() {
+    if (this.collecting) return this.status('采集进行中…', 'info');
+    const { config = {}, jobs = [], deliveredIds = {} } = await JH.get(['config', 'jobs', 'deliveredIds']);
+    const keywords = this.splitKeywords(config.jobKeywords);
+    if (!keywords.length) {
+      await JH.set({ autoCollect: false, collectCtx: null });
+      return this.status('请先在「采集配置」中填写意向岗位并保存', 'warn');
+    }
+    const cityList = (config.cities || '').split(/[,，]/).map((s) => s.trim()).filter(Boolean);
+    if (!cityList.length) cityList.push(''); // 未配城市 → 视为「全国」单虚拟城市
+    const maxCount = config.collectCount || 20;
+
+    // 配置指纹：关键词/城市/上限任一变更 → 丢弃旧上下文从头采，避免带着上一次旧条件跑
+    const sig = keywords.join('|') + '#' + cityList.join('|') + '#' + maxCount;
+    const { collectCtx: saved } = await JH.get(['collectCtx']);
+    const ctx = saved && saved.keywords ? saved : null;
+    if (ctx && ctx.sig !== sig) {
+      await JH.set({ collectCtx: null });
+      return this.startCollectMultiKeyword(); // 配置变了：清掉重建（重新读取后 ctx 为 null）
+    }
+
+    if (!ctx) {
+      await JH.set({ collectCtx: {
+        sig,
+        keywords,
+        cityList,
+        kwIdx: 0,
+        cityIdx: 0,
+        maxCount,
+        collectedIds: jobs.map((j) => j.id),
+        collectedFps: jobs.map((j) => j.fp || JH.stableId(j.company, j.title, j.city)),
+        listJobs: [],
+        scanned: 0,
+        duplicate: 0,
+        filteredList: 0,
+        cityFixAttempts: {},
+      } });
+    }
+
+    try {
+      await this.collectMultiStep(config, jobs, deliveredIds, maxCount);
+    } catch (e) {
+      JH.setLastError(e, 'collectMultiKeyword');
+      this.status('采集出错：' + (e.message || e) + '（已记录，点「诊断」可查看详情）', 'error');
+    }
+  },
+
+  /** 多关键词二维遍历的一步：当前 (kw, city) 列表采集 → 合并去重 → 步进到下一组合或收尾补采 */
+  async collectMultiStep(config, jobs, deliveredIds, maxCount) {
+    const { collectCtx: ctx } = await JH.get(['collectCtx']);
+    if (!ctx || !ctx.keywords) {
+      return this.status('多关键词采集上下文丢失，请重新点击「岗位采集」', 'warn');
+    }
+
+    // 已达总上限 → 不再开新搜索页，直接进详情补采收尾
+    if (ctx.listJobs.length >= ctx.maxCount) {
+      await JH.set({ collectCtx: null, autoCollect: false, collectNav: null });
+      const { filteredJobs: _fj = [] } = await JH.get(['filteredJobs']);
+      const oldFiltered = new Map(_fj.map((f) => [f.id, f.filterSig || '']));
+      const filterSig = this.calcFilterSig(config);
+      this.status(`列表采集完成（共 ${ctx.listJobs.length} 个，跨 ${ctx.keywords.length} 关键词），正在补采 JD…`, 'info', 0);
+      await this.enrichAndSave(ctx.listJobs, config, jobs, deliveredIds, { scanned: ctx.scanned, duplicate: ctx.duplicate, filteredList: ctx.filteredList }, oldFiltered, filterSig);
+      return;
+    }
+
+    const kw = ctx.keywords[ctx.kwIdx];
+    const city = ctx.cityList[ctx.cityIdx] || '';
+
+    // 当前页不是本 (kw, city) 搜索结果 → 跳转（每次跳转都带 autoCollect + collectNav 兜底续跑）
+    if (!JHCollector.searchMatches(kw, city)) {
+      const url = JHCollector.buildSearchUrl(kw, city);
+      if (await this.gotoSearch(url, `前往「${kw} · ${JHCollector.cityLabel(city)}」搜索页…`)) return;
+    }
+
+    // 城市校验：BOSS 可能忽略 ?city= 按存储城市渲染，不符则自动切
+    const fixKey = ctx.kwIdx + ':' + ctx.cityIdx;
+    const alreadyTried = !!(ctx.cityFixAttempts && ctx.cityFixAttempts[fixKey]);
+    const cityCheck = await JHCollector.ensureTargetCity(city, alreadyTried);
+    if (cityCheck.navigated) {
+      const nextUrl = JHCollector.buildSearchUrl(kw, city);
+      ctx.cityFixAttempts = Object.assign({}, ctx.cityFixAttempts, { [fixKey]: 1 });
+      await JH.set({ collectCtx: ctx, autoCollect: true, collectNav: { url: nextUrl, ts: Date.now() } });
+      this.status(`正在切换至「${JHCollector.cityLabel(city)}」重新采集…`, 'info', 0);
+      return;
+    }
+    if (!cityCheck.ok) {
+      this.status(`⚠️ 页面实际城市与配置不符（期望 ${city}），已尽力切换失败，将按实际渲染城市采集`, 'warn', 6000);
+    }
+
+    this.collecting = true;
+    await JH.set({ collectNav: null }); // 已成功落到目标搜索页，重置跳转计数
+    const btn = this.el.querySelector('#jh-collect');
+    if (btn) { btn.innerHTML = '<span class="jh-spin"></span>采集中'; btn.disabled = true; }
+    try {
+      const filterSig = this.calcFilterSig(config);
+      const { filteredJobs: _fj = [] } = await JH.get(['filteredJobs']);
+      const oldFiltered = new Map(_fj.map((f) => [f.id, f.filterSig || '']));
+      const existingIds = new Set(ctx.collectedIds);
+      const remain = Math.max(0, ctx.maxCount - ctx.listJobs.length);
+      this.status(`多关键词采集（关键词 ${ctx.kwIdx + 1}/${ctx.keywords.length} · 城市 ${ctx.cityIdx + 1}/${ctx.cityList.length}）：${kw} · ${JHCollector.cityLabel(city)}`, 'info', 0);
+
+      const listRes = await JHCollector.collectFromListPage(config, existingIds, deliveredIds, remain, (job, reasons) => this.recordFiltered(job, reasons, filterSig), oldFiltered, filterSig);
+      if (listRes.risk) {
+        await JH.set({ collectCtx: null, autoCollect: false });
+        this.status('⚠️ 检测到安全验证，采集已熔断。请手动完成验证后重新点击采集', 'error', 0);
+        return;
+      }
+      ctx.scanned += listRes.scanned || 0;
+      ctx.duplicate += listRes.duplicate || 0;
+      ctx.filteredList += listRes.filteredList || 0;
+
+      // 合并当前 (kw,city) 结果：跨关键词用 id + fp 双重去重，避免换个词搜到同一岗位重复进详情补采
+      let added = 0;
+      for (const j of listRes.jobs) {
+        const fp = j.fp || JH.stableId(j.company, j.title, j.city);
+        if (!ctx.collectedIds.includes(j.id) && !ctx.collectedFps.includes(fp)) {
+          ctx.listJobs.push(j);
+          ctx.collectedIds.push(j.id);
+          ctx.collectedFps.push(fp);
+          added++;
+        }
+      }
+
+      // 步进到下一 (kw, city) 组合（城市为内层，跑完一圈再换下一个关键词）
+      ctx.cityIdx++;
+      if (ctx.cityIdx >= ctx.cityList.length) {
+        ctx.cityIdx = 0;
+        ctx.kwIdx++;
+      }
+
+      if (ctx.kwIdx < ctx.keywords.length) {
+        const nkw = ctx.keywords[ctx.kwIdx];
+        const ncity = ctx.cityList[ctx.cityIdx] || '';
+        const nextUrl = JHCollector.buildSearchUrl(nkw, ncity);
+        await JH.set({ collectCtx: ctx, autoCollect: true, collectNav: { url: nextUrl, ts: Date.now() } });
+        this.status(`已采「${kw} · ${JHCollector.cityLabel(city)}」+${added} 个，前往 ${nkw} · ${JHCollector.cityLabel(ncity)}…`, 'info');
+        location.href = nextUrl;
+        return;
+      }
+
+      // 全部关键词采完 → 统一进详情页补采
+      await JH.set({ collectCtx: null, autoCollect: false, collectNav: null });
+      this.status(`列表采集完成（共 ${ctx.listJobs.length} 个，跨 ${ctx.keywords.length} 关键词），正在补采 JD…`, 'info', 0);
+      await this.enrichAndSave(ctx.listJobs, config, jobs, deliveredIds, { scanned: ctx.scanned, duplicate: ctx.duplicate, filteredList: ctx.filteredList }, oldFiltered, filterSig);
+    } catch (e) {
+      JH.setLastError(e, 'collectMultiStep');
+      this.status('采集出错：' + (e.message || e) + '（已记录，点「诊断」可查看详情）', 'error');
+    } finally {
+      this.collecting = false;
+      const btn = this.el.querySelector('#jh-collect');
+      if (btn) { btn.innerHTML = '岗位采集'; btn.disabled = false; }
     }
   },
 
