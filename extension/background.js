@@ -72,12 +72,73 @@ async function callDeepSeek(messages, apiKey, jsonMode = false) {
 
 /** 匹配度分析：JD × 简历 → {score, reason, keywords} */
 async function analyzeMatch(job, resumeText, apiKey) {
+  // 评分卡 + few-shot：6 维度加权合成总分，并用贴近候选人简历的示例钉住刻度，缓解分数扎堆
+  const SYSTEM = [
+    '你是资深HR和职业规划师。根据岗位JD与候选人简历，严格评估匹配度。',
+    '',
+    '【评分卡】请先按以下 6 个维度分别评估匹配度（各 0-100），再按权重加权合成总分：',
+    '- 岗位职责匹配　权重20%：岗位日常职责与候选人过往职责的重合度',
+    '- 核心技能匹配　权重25%：JD要求的硬技能/工具/方法论，候选人是否具备',
+    '- 项目/经验匹配　权重25%：候选人做过的相关项目、年限、规模、量化成果',
+    '- 专业背景匹配　权重10%：学历/专业方向与岗位的契合',
+    '- 行业/领域匹配　权重10%：所在行业/业务领域是否一致',
+    '- 加分项/语言契合　权重10%：语言、地域、特殊资源、证书等加分项',
+    '',
+    '【分数段定义】',
+    '90-100 = 经验高度对口，可立即上手',
+    '80-89  = 强相关、能力可迁移，胜任无虞',
+    '70-79  = 部分匹配，需少量补充学习',
+    '60-69  = 泛相关但跨领域，差距明显',
+    '<60    = 明显偏离，仅行业/背景沾边',
+    '',
+    '【输出要求】严格输出一个 JSON 对象（不要 markdown、不要任何解释文字）：',
+    '{"score": 0-100整数, "keywords": ["JD核心能力关键词,最多6个"], "reason": "一句话评估理由,30字内", "dims": {"duty":0-100,"skill":0-100,"exp":0-100,"bg":0-100,"industry":0-100,"bonus":0-100}}',
+    'score 必须是 6 维度加权合成的整数：四舍五入(duty*0.2 + skill*0.25 + exp*0.25 + bg*0.1 + industry*0.1 + bonus*0.1)。',
+    '必须基于真实匹配点评分，不得无依据虚高；各维度分须反映真实差距，不得全部趋同。'
+  ].join('\n');
+
+  // few-shot：用贴近候选人（社区/创作者/内容运营方向）的示例，钉住高/中/低三档刻度
+  const fewshot = [
+    {
+      role: 'user',
+      content: '【岗位】创作者生态运营专家｜某互联网公司｜25-40K\n【JD】\n负责创作者生态体系建设，制定创作者成长激励机制；策划创作者活动提升活跃与留存；搭建创作者分层运营体系；联动内容团队孵化优质创作者。要求：3年以上社区/创作者运营经验，熟悉活动策划与用户分层，有从0到1搭建经验者优先。\n\n【候选人简历】\n7年社区与创作者运营经验。曾主导创作者成长体系从0搭建，将培养周期从3个月缩短至1个月，新创作者7日留存提升40%；策划多场创作者活动单场UV破50万；搭建官方MCN，深度连接50+核心创作者。'
+    },
+    {
+      role: 'assistant',
+      content: '{"score": 84, "keywords": ["创作者运营","社区增长","活动策划","用户分层"], "reason": "核心技能与项目经验高度对口，能力可迁移", "dims": {"duty":85,"skill":88,"exp":86,"bg":70,"industry":80,"bonus":80}}'
+    },
+    {
+      role: 'user',
+      content: '【岗位】内容策略产品经理｜某内容平台｜20-35K\n【JD】\n负责内容生态策略规划，制定内容分发与质量规则；联动运营与算法团队优化内容供给；要求：有内容/社区运营经验，具备策略思维与数据分析能力。\n\n【候选人简历】\n5年内容社区运营经验，负责过内容活动策划与创作者运营，具备基础数据分析能力；偏执行落地，较少独立负责策略规划，无产品经理title。'
+    },
+    {
+      role: 'assistant',
+      content: '{"score": 72, "keywords": ["内容策略","社区运营","数据分析"], "reason": "相关经验充足但偏执行层，策略规划待补", "dims": {"duty":78,"skill":72,"exp":72,"bg":65,"industry":80,"bonus":60}}'
+    },
+    {
+      role: 'user',
+      content: '【岗位】AI 算法工程师（推荐方向）｜某科技公司｜30-50K\n【JD】\n负责推荐/排序模型的设计、训练与上线；精通深度学习、PyTorch/TensorFlow；有大规模特征工程与AB实验经验。要求：计算机/数学相关硕士以上，2年以上算法落地经验。\n\n【候选人简历】\n3年内容运营经验，负责社区内容策划与用户增长；熟练使用运营工具与数据分析，无算法/建模背景，未参与过模型开发。'
+    },
+    {
+      role: 'assistant',
+      content: '{"score": 41, "keywords": ["深度学习","模型训练","算法工程"], "reason": "职能偏离较大，仅行业方向部分沾边", "dims": {"duty":50,"skill":35,"exp":30,"bg":40,"industry":60,"bonus":50}}'
+    }
+  ];
+
   const prompt = [
-    { role: 'system', content: '你是资深HR和职业规划师。根据岗位JD与候选人简历，严格评估匹配度。输出JSON：{"score": 0-100整数, "keywords": ["JD核心能力关键词,最多6个"], "reason": "一句话评估理由,30字内"}。评分标准：核心技能匹配50%、经验年限与行业匹配30%、加分项20%。宁可打低分不要虚高。' },
+    { role: 'system', content: SYSTEM },
+    ...fewshot,
     { role: 'user', content: `【岗位】${job.title}｜${job.company}｜${job.salary}\n【JD】\n${(job.jd || '').slice(0, 2500)}\n\n【候选人简历】\n${resumeText.slice(0, 2500)}` }
   ];
   const content = await callDeepSeek(prompt, apiKey, true);
-  const parsed = JSON.parse(content);
+  let parsed;
+  try {
+    parsed = JSON.parse(content);
+  } catch (e) {
+    // 兜底：模型偶尔在 JSON 外包了 markdown 代码块，抽取第一个 {...} 再解析
+    const m = content && content.match(/\{[\s\S]*\}/);
+    parsed = m ? JSON.parse(m[1]) : {};
+  }
   return {
     score: Math.max(0, Math.min(100, parseInt(parsed.score) || 0)),
     keywords: parsed.keywords || [],
