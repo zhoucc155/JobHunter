@@ -72,37 +72,31 @@ async function callDeepSeek(messages, apiKey, jsonMode = false) {
 
 /** 匹配度分析：JD × 简历 → {score, reason, keywords} */
 async function analyzeMatch(job, resumeText, apiKey) {
-  // 评分卡(4正向维度加权) + 负向扣分机制 + few-shot(锚点80/60/30)：缓解分数偏高与扎堆
+  // 模型输出维度分与扣分明细，最终 score 由代码本地精确计算（防止模型凭感觉给分/扎堆）
   const SYSTEM = [
     '你是资深HR和职业规划师。根据岗位JD与候选人简历，严格评估匹配度。',
+    '注意：不要给"同情分"；若JD要求某能力而简历缺少明确证据，该维度必须给低分并扣除对应 penalty。',
     '',
-    '【评分卡】先按以下 4 个维度评估匹配度（各 0-100），加权合成基准分：',
+    '【评分卡】先按以下 4 个维度评估匹配度（各 0-100），代码会按权重合成基准分：',
     '- 岗位核心要求匹配 权重35%：JD列出的关键职责、硬技能、方法论，候选人是否具备',
     '- 项目/经验匹配 权重30%：相关项目年限、规模、量化成果、与JD贴近度',
     '- 背景/行业匹配 权重20%：学历专业、行业领域、平台类型契合度',
     '- 软性/加分项 权重15%：语言、地域、特殊资源、证书等',
-    '基准分 = 四舍五入(核心*0.35 + 经验*0.30 + 背景*0.20 + 加分*0.15)',
+    '基准分 = round(核心*0.35 + 经验*0.30 + 背景*0.20 + 加分*0.15)',
     '',
     '【负向扣分】检查候选人与JD的明显差距，从基准分中扣除（各项累加，总扣分上限30）：',
     '- 核心能力缺失（缺少关键证据）：JD要求的关键能力候选人明显不具备，扣3-10分（缺失越多扣越多）',
     '- 平台/行业差异：JD要求行业/平台/业务类型候选人完全不沾边，扣5-8分',
     '- 职能偏移：岗位职能方向与候选人经验方向明显偏离（如策略产品 vs 执行运营），扣3-7分',
     '- 经验/级别不匹配（硬性缺失）：JD明确要求X年经验或某级别，候选人明显不满足，扣2-5分',
-    '最终 score = 基准分 - 负向扣分（下限0，上限100）',
+    '最终 score = 基准分 - 负向扣分（下限0，上限100）。',
     '',
-    '【分数段定义】',
-    '90-100 = JD几乎为候选人量身定做',
-    '80-89  = 核心要求高度满足，可快速上手',
-    '70-79  = 大部分匹配，有1-2项明显短板',
-    '60-69  = 勉强相关，需较大调整',
-    '<60    = 有明显偏离或硬性缺失',
-    '',
-    '【输出要求】严格输出一个 JSON 对象（不要 markdown、不要解释文字）：',
-    '{"score": 0-100整数, "keywords": ["JD核心能力关键词,最多6个"], "reason": "一句话评估理由,30字内", "dims": {"core":0-100,"exp":0-100,"bg":0-100,"bonus":0-100}, "penalty": {"missing":0-10,"industry":0-8,"shift":0-7,"level":0-5}}',
+    '【输出要求】严格输出一个 JSON 对象（不要 markdown、不要解释文字），不要包含 score 字段；最终分数由我根据 dims 和 penalty 本地计算：',
+    '{"keywords": ["JD核心能力关键词,最多6个"], "reason": "一句话评估理由,30字内", "dims": {"core":0-100,"exp":0-100,"bg":0-100,"bonus":0-100}, "penalty": {"missing":0-10,"industry":0-8,"shift":0-7,"level":0-5}}',
     '必须基于真实匹配点评分，不得无依据虚高；各维度须反映真实差距，不得全部趋同；负向扣分须有依据，不可随意抬高。'
   ].join('\n');
 
-  // few-shot：贴合候选人（社区/创作者/内容运营方向），锚点钉在 80/60/30 三档
+  // few-shot：展示期望的 dims/penalty 分布（最终 score 由代码计算）
   const fewshot = [
     {
       role: 'user',
@@ -110,7 +104,7 @@ async function analyzeMatch(job, resumeText, apiKey) {
     },
     {
       role: 'assistant',
-      content: '{"score": 80, "keywords": ["创作者运营","社区增长","活动策划","用户分层"], "reason": "核心技能与项目经验高度对口，能力可迁移", "dims": {"core":82,"exp":84,"bg":72,"bonus":78}, "penalty": {"missing":0,"industry":0,"shift":0,"level":0}}'
+      content: '{"keywords": ["创作者运营","社区增长","活动策划","用户分层"], "reason": "核心技能与项目经验高度对口，能力可迁移", "dims": {"core":82,"exp":84,"bg":72,"bonus":78}, "penalty": {"missing":0,"industry":0,"shift":0,"level":0}}'
     },
     {
       role: 'user',
@@ -118,7 +112,7 @@ async function analyzeMatch(job, resumeText, apiKey) {
     },
     {
       role: 'assistant',
-      content: '{"score": 60, "keywords": ["内容策略","社区运营","数据分析"], "reason": "相关经验充足但偏执行层，缺策略规划与产品title", "dims": {"core":72,"exp":68,"bg":66,"bonus":58}, "penalty": {"missing":0,"industry":0,"shift":5,"level":3}}'
+      content: '{"keywords": ["内容策略","社区运营","数据分析"], "reason": "相关经验充足但偏执行层，缺策略规划与产品title", "dims": {"core":72,"exp":68,"bg":66,"bonus":58}, "penalty": {"missing":0,"industry":0,"shift":5,"level":3}}'
     },
     {
       role: 'user',
@@ -126,7 +120,7 @@ async function analyzeMatch(job, resumeText, apiKey) {
     },
     {
       role: 'assistant',
-      content: '{"score": 30, "keywords": ["深度学习","模型训练","算法工程"], "reason": "职能完全偏离，核心能力与行业均不沾边", "dims": {"core":50,"exp":45,"bg":55,"bonus":60}, "penalty": {"missing":8,"industry":6,"shift":5,"level":3}}'
+      content: '{"keywords": ["深度学习","模型训练","算法工程"], "reason": "职能完全偏离，核心能力与行业均不沾边", "dims": {"core":50,"exp":45,"bg":55,"bonus":60}, "penalty": {"missing":8,"industry":6,"shift":5,"level":3}}'
     }
   ];
 
@@ -144,8 +138,25 @@ async function analyzeMatch(job, resumeText, apiKey) {
     const m = content && content.match(/\{[\s\S]*\}/);
     parsed = m ? JSON.parse(m[0]) : {};
   }
+
+  // 本地精确计算 score，覆盖模型可能存在的"和稀泥"式打分
+  const dims = parsed.dims || {};
+  const penalty = parsed.penalty || {};
+  const base = Math.round(
+    (parseInt(dims.core, 10) || 0) * 0.35 +
+    (parseInt(dims.exp, 10) || 0) * 0.30 +
+    (parseInt(dims.bg, 10) || 0) * 0.20 +
+    (parseInt(dims.bonus, 10) || 0) * 0.15
+  );
+  const totalPenalty = Math.min(30,
+    (parseInt(penalty.missing, 10) || 0) +
+    (parseInt(penalty.industry, 10) || 0) +
+    (parseInt(penalty.shift, 10) || 0) +
+    (parseInt(penalty.level, 10) || 0)
+  );
+  const score = Math.max(0, Math.min(100, base - totalPenalty));
   return {
-    score: Math.max(0, Math.min(100, parseInt(parsed.score) || 0)),
+    score,
     keywords: parsed.keywords || [],
     reason: parsed.reason || ''
   };
