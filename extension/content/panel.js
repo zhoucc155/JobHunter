@@ -608,10 +608,10 @@ const JHPanel = {
     return parts.length ? parts : [s];
   },
 
-  /** 多关键词采集入口（方案B：随机抽词 + 共享总额度 + 去重兜底）
-   *  每轮随机抽 1 个 (关键词,城市) 单元→读它第1页→id/fp 去重跳过已知、只补采新增→
-   *  随机换下一个(≠上一个)→全局 maxCount 满则收尾。无每词硬额度；
-   *  每个单元每次访问最多采 capPerVisit(≈maxCount/单元数) 个就主动让位，保证摊匀不卡某个词。
+  /** 多关键词采集入口（方案B-v2：随机抽词 + 整页抓完再换 + 共享总额度 + 去重兜底）
+   *  每轮随机抽 1 个 (关键词,城市) 单元→读它第1页→把本页能采的(最多 maxCount 个)都采了→
+   *  若额度未满再随机换下一个(≠上一个)→全局 maxCount 满则收尾。无每词硬额度；
+   *  每个单元每次访问抓「整页(上限 maxCount)」而非只抓2个，搜索次数降到 1~3 次/轮；
    *  同一词第1页的新岗位下一轮必被抓到（ctx 每轮清空、重新扫第1页）。 */
   async startCollectMultiKeyword() {
     if (this.collecting) return this.status('采集进行中…', 'info');
@@ -640,7 +640,7 @@ const JHPanel = {
       for (let ki = 0; ki < keywords.length; ki++) {
         for (let ci = 0; ci < cityList.length; ci++) units.push({ ki, ci });
       }
-      const capPerVisit = Math.max(1, Math.ceil(maxCount / units.length)); // 每次访问最多采这么多就让位（软让位，非每词硬额度）
+      const capPerVisit = maxCount; // 每次访问抓「整页(上限 maxCount)」，抓完本页再换下一个词（仍随机、≠上一个）
       await JH.set({ collectCtx: {
         sig,
         keywords,
@@ -683,7 +683,7 @@ const JHPanel = {
     return -1; // 全部完成
   },
 
-  /** 多关键词随机轮询采集（方案B）：每次抽 1 个单元→读第1页→去重补采→随机换下一个(≠上一个)，总额满或全单元穷尽则收尾 */
+  /** 多关键词随机轮询采集（方案B-v2）：每次抽 1 个单元→读第1页→整页去重补采(上限 maxCount)→额度未满才随机换下一个(≠上一个)，总额满或全单元穷尽则收尾 */
   async collectMultiStep(config, jobs, deliveredIds, maxCount) {
     const { collectCtx: ctx } = await JH.get(['collectCtx']);
     if (!ctx || !ctx.keywords) {
