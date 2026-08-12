@@ -107,7 +107,20 @@ async function analyzeMatch(job, resumeText, apiKey) {
   } catch (e) {
     // 兜底：模型偶尔在 JSON 外包了 markdown 代码块，抽取第一个 {...} 再解析
     const m = content && content.match(/\{[\s\S]*\}/);
-    parsed = m ? JSON.parse(m[0]) : {};
+    parsed = m ? JSON.parse(m[0]) : null;
+  }
+  // 解析失败（模型偶发返回非 JSON / 空串 / 截断）→ 重试一次，避免误把 parsed={} 当全 0 维度落库成 0 分
+  if (!parsed || !parsed.dims) {
+    const content2 = await callDeepSeek(prompt, apiKey, true);
+    try { parsed = JSON.parse(content2); } catch (e) {
+      const m = content2 && content2.match(/\{[\s\S]*\}/);
+      parsed = m ? JSON.parse(m[0]) : null;
+    }
+  }
+  // 两次都拿不到维度分：返回 null，让面板显示「未析」而非误存 0 分
+  if (!parsed || !parsed.dims) {
+    console.warn('[analyzeMatch] 模型未返回有效维度分，跳过计分:', job.title);
+    return { score: null, keywords: [], reason: '评分模型未返回有效结果，请重试' };
   }
 
   // 本地精确计算 score，覆盖模型可能存在的"和稀泥"式打分
@@ -1000,8 +1013,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           return sendResponse({ ok: true, text });
         }
         case 'COLLECT_DETAILS': {
-          const results = await runDetailCollection(msg.jobs, sender.tab && sender.tab.id);
-          return sendResponse({ ok: true, results });
+          // runDetailCollection 内部已返回 {results:[...]}，此处必须解包一层，
+          // 否则面板拿到的 resp.results 是对象而非数组 → 富集/补采全部失效（JD 永远填不上）。
+          const detail = await runDetailCollection(msg.jobs, sender.tab && sender.tab.id);
+          return sendResponse({ ok: true, results: detail.results });
         }
         case 'COLLECT_ABORT': {
           collectAborted = true;
