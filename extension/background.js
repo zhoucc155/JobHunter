@@ -93,7 +93,12 @@ async function analyzeMatch(job, resumeText, apiKey) {
     '',
     '【输出要求】严格输出一个 JSON 对象（不要 markdown、不要解释文字），不要包含 score 字段；最终分数由我根据 dims 和 penalty 本地计算：',
     '{"keywords": ["JD核心能力关键词,最多6个"], "reason": "一句话评估理由,30字内", "dims": {"core":0-100,"exp":0-100,"bg":0-100,"bonus":0-100}, "penalty": {"missing":0-10,"industry":0-8,"shift":0-7,"level":0-5}}',
-    '必须基于真实匹配点评分，不得无依据虚高；各维度须反映真实差距，不得全部趋同；负向扣分须有依据，不可随意抬高。'
+    '必须基于真实匹配点评分，不得无依据虚高；各维度须反映真实差距，不得全部趋同；负向扣分须有依据，不可随意抬高。',
+    '',
+    '【校准规则】候选人简历以「创作者生态、直播生态、内容社区运营、达人/MCN运营」为主战场，而非纯用户增长策略岗位：',
+    '- 若 JD 的核心职责是「用户增长策略/拉新促活留存/增长实验/渠道投放/A-B测试/漏斗分析」，而候选人证据主要来自「创作者/主播/达人/内容社区」场景，则 core 必须 ≤60，且 penalty.shift（职能偏移）扣 5-8 分；',
+    '- 若 JD 的核心职责是「创作者生态/内容社区/达人运营/主播运营/MCN」，则高分为合理匹配。',
+    '- 仅标题含「用户运营/策略运营/用户增长」但 JD 实质为增长策略的，不得仅凭标题给高分。'
   ].join('\n');
 
   // few-shot：展示期望的 dims/penalty 分布（最终 score 由代码计算）
@@ -155,6 +160,8 @@ async function analyzeMatch(job, resumeText, apiKey) {
     (parseInt(penalty.level, 10) || 0)
   );
   const score = Math.max(0, Math.min(100, base - totalPenalty));
+  // 诊断日志：控制台可查看模型原始维度分与扣分，定位分数虚高根因
+  console.log('[analyzeMatch]', job.title, '| jdLen=', (job.jd || '').length, '| dims=', dims, '| penalty=', penalty, '| base=', base, '| totalPenalty=', totalPenalty, '| score=', score);
   return {
     score,
     keywords: parsed.keywords || [],
