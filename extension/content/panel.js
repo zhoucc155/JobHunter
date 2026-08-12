@@ -1078,13 +1078,44 @@ const JHPanel = {
     const targets = jobs.filter((j) => (j.score === null || j.score === undefined) && !j.salaryExcluded);
     if (!targets.length) return this.status('所有岗位均已分析过', 'info');
 
+    // 分析前补采缺失的 JD：否则 analyzeMatch 只能看到岗位标题，必然虚高（已确认根因）。
+    // 复用后台 COLLECT_DETAILS → runDetailCollection，逐个开后台详情页补采 jd 并落库。
+    const needJd = targets.filter((j) => !(j.jd && j.jd.trim()));
+    if (needJd.length) {
+      this.status(`正在补采 ${needJd.length} 个缺失JD的岗位…`, 'info', 0);
+      try {
+        const resp = await JH.send({ type: 'COLLECT_DETAILS', jobs: needJd });
+        if (resp && resp.ok && resp.results) {
+          const byId = {};
+          resp.results.forEach((r) => { if (r && r.id) byId[r.id] = r; });
+          const { jobs: cur = [] } = await JH.get(['jobs']);
+          let changed = false;
+          const merged = cur.map((j) => {
+            if (byId[j.id]) { changed = true; return { ...j, ...byId[j.id] }; }
+            return j;
+          });
+          if (changed) await JH.set({ jobs: merged });
+          // 用补采后的数据刷新内存中的 targets
+          targets.forEach((t) => { if (byId[t.id]) Object.assign(t, byId[t.id]); });
+        }
+      } catch (e) {
+        console.warn('[JobHunter] 补采JD失败：', e);
+      }
+    }
+
     this.analyzing = true;
     const btn = this.el.querySelector('#jh-analyze');
     btn.disabled = true;
 
-    let done = 0;
+    let analyzed = 0, skipped = 0;
     for (const job of targets) {
-      btn.innerHTML = `<span class="jh-spin"></span>${done + 1}/${targets.length}`;
+      // 无 JD 不分析：避免模型仅凭标题给虚高分（补采仍失败的，明确跳过而非瞎打）
+      if (!(job.jd && job.jd.trim())) {
+        skipped++;
+        this.status(`「${job.title}」未获取到JD，跳过分析（请重新采集后再试）`, 'warn', 4000);
+        continue;
+      }
+      btn.innerHTML = `<span class="jh-spin"></span>${analyzed + 1}/${targets.length}`;
       const resp = await JH.send({ type: 'ANALYZE_MATCH', job, resumeText: resume.text });
       if (resp && resp.error) {
         this.status('分析失败：' + resp.error, 'error', 8000);
@@ -1103,14 +1134,17 @@ const JHPanel = {
         await JH.set({ jobs: cur });
         this.renderJobs(cur);
       }
-      done++;
+      analyzed++;
       await JH.randSleep(500, 1500); // API 节奏
     }
 
     this.analyzing = false;
     btn.disabled = false;
     btn.innerHTML = '匹配度分析';
-    if (done) this.status(`匹配度分析完成 ✓ 共 ${done} 个岗位`, 'ok');
+    if (analyzed || skipped) {
+      const skipMsg = skipped ? `，跳过 ${skipped} 个（无JD）` : '';
+      this.status(`匹配度分析完成 ✓ 共分析 ${analyzed} 个岗位${skipMsg}`, 'ok');
+    }
   },
 
   // ==========================================================
