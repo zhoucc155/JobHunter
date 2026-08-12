@@ -101,37 +101,8 @@ async function analyzeMatch(job, resumeText, apiKey) {
     '- 仅标题含「用户运营/策略运营/用户增长」但 JD 实质为增长策略的，不得仅凭标题给高分。'
   ].join('\n');
 
-  // few-shot：展示期望的 dims/penalty 分布（最终 score 由代码计算）
-  const fewshot = [
-    {
-      role: 'user',
-      content: '【岗位】创作者生态运营专家｜某互联网公司｜25-40K\n【JD】\n负责创作者生态体系建设，制定创作者成长激励机制；策划创作者活动提升活跃与留存；搭建创作者分层运营体系；联动内容团队孵化优质创作者。要求：3年以上社区/创作者运营经验，熟悉活动策划与用户分层，有从0到1搭建经验者优先。\n\n【候选人简历】\n7年社区与创作者运营经验。曾主导创作者成长体系从0搭建，将培养周期从3个月缩短至1个月，新创作者7日留存提升40%；策划多场创作者活动单场UV破50万；搭建官方MCN，深度连接50+核心创作者。'
-    },
-    {
-      role: 'assistant',
-      content: '{"keywords": ["创作者运营","社区增长","活动策划","用户分层"], "reason": "核心技能与项目经验高度对口，能力可迁移", "dims": {"core":82,"exp":84,"bg":72,"bonus":78}, "penalty": {"missing":0,"industry":0,"shift":0,"level":0}}'
-    },
-    {
-      role: 'user',
-      content: '【岗位】内容策略产品经理｜某内容平台｜20-35K\n【JD】\n负责内容生态策略规划，制定内容分发与质量规则；联动运营与算法团队优化内容供给；要求：有内容/社区运营经验，具备策略思维与数据分析能力，独立负责过策略规划。\n\n【候选人简历】\n5年内容社区运营经验，负责过内容活动策划与创作者运营，具备基础数据分析能力；偏执行落地，较少独立负责策略规划，无产品经理title。'
-    },
-    {
-      role: 'assistant',
-      content: '{"keywords": ["内容策略","社区运营","数据分析"], "reason": "相关经验充足但偏执行层，缺策略规划与产品title", "dims": {"core":72,"exp":68,"bg":66,"bonus":58}, "penalty": {"missing":0,"industry":0,"shift":5,"level":3}}'
-    },
-    {
-      role: 'user',
-      content: '【岗位】AI 算法工程师（推荐方向）｜某科技公司｜30-50K\n【JD】\n负责推荐/排序模型的设计、训练与上线；精通深度学习、PyTorch/TensorFlow；有大规模特征工程与AB实验经验。要求：计算机/数学相关硕士以上，2年以上算法落地经验。\n\n【候选人简历】\n3年内容运营经验，负责社区内容策划与用户增长；熟练使用运营工具与数据分析，无算法/建模背景，未参与过模型开发。'
-    },
-    {
-      role: 'assistant',
-      content: '{"keywords": ["深度学习","模型训练","算法工程"], "reason": "职能完全偏离，核心能力与行业均不沾边", "dims": {"core":50,"exp":45,"bg":55,"bonus":60}, "penalty": {"missing":8,"industry":6,"shift":5,"level":3}}'
-    }
-  ];
-
   const prompt = [
     { role: 'system', content: SYSTEM },
-    ...fewshot,
     { role: 'user', content: `【岗位】${job.title}｜${job.company}｜${job.salary}\n【JD】\n${(job.jd || '').slice(0, 2500)}\n\n【候选人简历】\n${resumeText.slice(0, 2500)}` }
   ];
   const content = await callDeepSeek(prompt, apiKey, true);
