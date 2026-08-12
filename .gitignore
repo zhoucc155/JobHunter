@@ -8,8 +8,9 @@ extension-backup-*/
 .workbuddy/
 .cache/
 
-# 临时测试脚本
+# 临时测试脚本 / 一次性注入脚本
 _tmp_*
+inject_*.py
 
 # extension 内的历史留底样式（非运行必需）
 *.bak-*
