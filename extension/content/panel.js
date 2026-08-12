@@ -1212,7 +1212,10 @@ const JHPanel = {
       let scoreCls = 'jh-score-none', scoreTxt = '未析';
       if (j.score !== null && j.score !== undefined) {
         scoreTxt = j.score;
-        scoreCls = j.score >= 75 ? 'jh-score-high' : j.score >= 50 ? 'jh-score-mid' : 'jh-score-low';
+        if (j.score >= 75) scoreCls = 'jh-score-green';
+        else if (j.score >= 60) scoreCls = 'jh-score-yellow';
+        else if (j.score >= 40) scoreCls = 'jh-score-orange';
+        else scoreCls = 'jh-score-red';
       }
       const tags = [];
       if (j.status === 'delivered') tags.push(`<span class="jh-tag ${j.imageSent ? 'jh-tag-img' : 'jh-tag-ok'}">${j.imageSent ? '已图投' : '已投递'}</span>`);

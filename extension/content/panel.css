@@ -270,9 +270,10 @@
   line-height: 1;
 }
 .jh-score small { font-size: 8px; font-weight: 400; margin-top: 1px; }
-.jh-score-high { background: #dcfce7; color: #16a34a; }
-.jh-score-mid { background: #fef9c3; color: #ca8a04; }
-.jh-score-low { background: #fee2e2; color: #dc2626; }
+.jh-score-green { background: #dcfce7; color: #16a34a; }
+.jh-score-yellow { background: #fef9c3; color: #ca8a04; }
+.jh-score-orange { background: #ffedd5; color: #ea580c; }
+.jh-score-red { background: #fee2e2; color: #dc2626; }
 .jh-score-none { background: #f1f5f9; color: #94a3b8; font-size: 11px; }
 
 /* 工具栏 */
