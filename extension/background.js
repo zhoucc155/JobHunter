@@ -138,7 +138,9 @@ async function analyzeMatch(job, resumeText, apiKey) {
     (parseInt(penalty.shift, 10) || 0) +
     (parseInt(penalty.level, 10) || 0)
   );
-  const score = Math.max(0, Math.min(100, base - totalPenalty));
+  // 硬性下限：极端不匹配岗位最低也给 5 分，避免界面上出现刺眼的"0分"
+  const MIN_SCORE = 5;
+  const score = Math.max(MIN_SCORE, Math.min(100, base - totalPenalty));
   // 诊断日志：控制台可查看模型原始维度分与扣分，定位分数虚高根因
   console.log('[analyzeMatch]', job.title, '| jdLen=', (job.jd || '').length, '| dims=', dims, '| penalty=', penalty, '| base=', base, '| totalPenalty=', totalPenalty, '| score=', score);
   return {

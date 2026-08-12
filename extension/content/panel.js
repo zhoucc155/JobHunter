@@ -1075,7 +1075,8 @@ const JHPanel = {
     if (this.analyzing) return;
     const { jobs = [], resume = {} } = await JH.get(['jobs', 'resume']);
     if (!resume.text) return this.status('请先在「我的简历」中保存简历文字版', 'warn');
-    const targets = jobs.filter((j) => (j.score === null || j.score === undefined) && !j.salaryExcluded);
+    // 0 分可能是旧解析失败误存或极端不匹配；统一纳入重分析，配合评分下限 5 分后不再出现 0 分
+    const targets = jobs.filter((j) => (j.score === null || j.score === undefined || j.score === 0) && !j.salaryExcluded);
     if (!targets.length) return this.status('所有岗位均已分析过', 'info');
 
     // 分析前补采缺失的 JD：否则 analyzeMatch 只能看到岗位标题，必然虚高（已确认根因）。
