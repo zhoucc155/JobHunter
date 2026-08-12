@@ -66,7 +66,7 @@ const JHPanel = {
         <!-- ② 采集配置 -->
         <div class="jh-section" data-sec="config">
           <label class="jh-label">意向岗位关键词</label>
-          <input class="jh-input" id="jh-kw" placeholder="如：产品经理" />
+          <input class="jh-input" id="jh-kw" placeholder="如：产品经理/前端开发（多词随机抽词采集）" />
           <label class="jh-label">意向城市</label>
           <input class="jh-input" id="jh-cities" placeholder="如：深圳,广州,杭州" />
           <label class="jh-label">期望薪资</label>
