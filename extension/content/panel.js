@@ -205,7 +205,6 @@ const JHPanel = {
     this.el.querySelector('#jh-auto-loop').addEventListener('change', async (e) => {
       await JH.set({ autoLoop: e.target.checked });
       if (!e.target.checked && this.clearAutoTimer) this.clearAutoTimer();
-      this.status(e.target.checked ? '已开启自动循环投递：生成文案后将自动发送并进入下一岗' : '已关闭自动循环投递：恢复逐条确认', 'info', 4000);
     });
 
     // 面板展开时，在面板及悬浮球「以外」按下鼠标才自动收起。
@@ -428,7 +427,7 @@ const JHPanel = {
     }
     if (recalculated) await JH.set({ jobs: allJobs });
     this.renderJobs(allJobs);
-    this.status('配置已保存 ✓' + (recalculated ? '，薪资过滤已更新' : ''), 'ok');
+    this.status('配置已保存 ✓' + (recalculated ? '，薪资过滤已更新' : ''), 'ok', 2000);
   },
 
   // ==========================================================
@@ -998,7 +997,7 @@ const JHPanel = {
       return kept;
     }
     const filteredN = filteredListN + filtered;
-    this.status(`采集完成 ✓ 本次扫描 ${scannedN} 个 · 新增 ${kept} · 过滤 ${filteredN} · 重复 ${duplicateN}`, 'ok', 8000);
+    this.status(`采集完成 ✓ 本次扫描 ${scannedN} 个 · 新增 ${kept} · 过滤 ${filteredN} · 重复 ${duplicateN}`, 'ok', 6000);
     return kept;
   },
 
@@ -1051,7 +1050,7 @@ const JHPanel = {
       } catch (e2) { /* ignore */ }
     }
     if (copied) {
-      this.status('诊断报告已复制到剪贴板 ✓ 直接粘贴发给开发者即可精准修复选择器', 'ok', 10000);
+      this.status('诊断报告已复制到剪贴板 ✓ 直接粘贴发给开发者即可精准修复选择器', 'ok', 3000);
     } else {
       // 实在复制不了就弹层展示，让用户手动全选复制
       const mask = document.createElement('div');
@@ -1119,7 +1118,7 @@ const JHPanel = {
       btn.innerHTML = `<span class="jh-spin"></span>${analyzed + 1}/${targets.length}`;
       const resp = await JH.send({ type: 'ANALYZE_MATCH', job, resumeText: resume.text });
       if (resp && resp.error) {
-        this.status('分析失败：' + resp.error, 'error', 8000);
+        this.status('分析失败：' + resp.error, 'error', 6000);
         break;
       }
       if (resp && resp.ok) {
@@ -1144,7 +1143,7 @@ const JHPanel = {
     btn.innerHTML = '匹配度分析';
     if (analyzed || skipped) {
       const skipMsg = skipped ? `，跳过 ${skipped} 个（无JD）` : '';
-      this.status(`匹配度分析完成 ✓ 共分析 ${analyzed} 个岗位${skipMsg}`, 'ok');
+      this.status(`匹配度分析完成 ✓ 共分析 ${analyzed} 个岗位${skipMsg}`, 'ok', 3000);
     }
   },
 
@@ -1311,7 +1310,7 @@ const JHPanel = {
       this.delivering = false;
       this._pendingGreeting = null;
       this._pendingGreetingJobId = null;
-      this.status(`投递结束 ✓ 本轮成功 ${this._roundStats.success} | 跳过 ${this._roundStats.skip} | 失败 ${this._roundStats.fail}`, 'ok', 8000);
+      this.status(`投递结束 ✓ 本轮成功 ${this._roundStats.success} | 跳过 ${this._roundStats.skip} | 失败 ${this._roundStats.fail}`, 'ok', 6000);
       await this.refreshLogsTab();
       return;
     }
@@ -1527,7 +1526,7 @@ const JHPanel = {
       await JH.set({ jobs });
       await JH.appendLog({ jobId: job.id, title: job.title, company: job.company, result: 'fail', reason: (resp && (resp.reason || resp.error)) || '未知错误' });
       this._roundStats.fail++;
-      this.status(`「${job.title}」投递失败：${(resp && (resp.reason || resp.error)) || '未知错误'}`, 'error', 8000);
+      this.status(`「${job.title}」投递失败：${(resp && (resp.reason || resp.error)) || '未知错误'}`, 'error', 6000);
     }
 
     this.renderJobs(jobs);
