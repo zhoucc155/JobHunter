@@ -181,37 +181,56 @@ function ensureClosing(text) {
   return base + tail;
 }
 
+/**
+ * 强制条件开头：根据 hasPortfolio 决定最终开头。
+ * - hasPortfolio=true  → 「你好，有案例和作品集」
+ * - hasPortfolio=false → 「你好，我是{姓名}」（无姓名则回退「你好！」）
+ * 无论模型输出何种开头，最终都归一为上述固定前缀，且正文中不再残留旧式问候/姓名。
+ */
+function ensureOpening(text, hasPortfolio, userName) {
+  let t = (text || '').replace(/\n+$/, '').trim();
+  const name = (userName || '').trim();
+  const open = hasPortfolio ? '你好，有案例和作品集' : (name ? `你好，我是${name}` : '你好！');
+  if (t.startsWith(open)) return t;
+  // 剥掉任何旧式开头（你好/您好 + 可选标点 + 可选"我是XX，" + 可选"有案例和作品集，"），再补回固定前缀
+  const greetRe = /^[你您]好\s*[，,!！?？]?\s*(我是[^，。！？]{0,20}[，,。.！!？]?)?\s*(有案例和作品集\s*[，,。.！!？]?)?\s*/;
+  let stripped = t.replace(greetRe, '').replace(/^\s*[，,。.！!？]+/, '');
+  const needSep = !open.endsWith('！') && !open.endsWith('。') && !open.endsWith('，');
+  const sep = needSep ? '，' : '';
+  return open + (stripped ? sep + stripped : (open.endsWith('，') ? '' : '。'));
+}
+
 /** 打招呼文案生成：单段真人风（自然语流、不分段、160字内） */
-async function genGreeting(job, resumeText, apiKey, userName) {
-  // 开头称呼：优先用用户填写的姓名；未填则要求AI从简历中提取真实姓名；再取不到用"您好！"
-  const nameRule = userName
-    ? `开头必须以「您好，我是${userName}，」起句，紧接职业定位。`
-    : '开头必须以「您好，我是XX，」起句（XX=从简历中提取的候选人真实姓名；若简历中确实没有姓名，则以「您好！」起句），紧接职业定位。绝不允许编造姓名或输出"您好，我是xxx"这类占位符。';
+async function genGreeting(job, resumeText, apiKey, userName, hasPortfolio) {
+  // 开头按「是否有作品集」决定：有→"你好，有案例和作品集"；无→"你好，我是{姓名}"
+  const openRule = hasPortfolio
+    ? '开头必须以「你好，有案例和作品集」起句，紧接职业定位与匹配案例。'
+    : (userName ? `开头必须以「你好，我是${userName}，」起句（紧接职业定位与匹配案例）。` : '开头必须以「你好！」起句（紧接职业定位与匹配案例）。');
   const sys = [
     '你是候选人本人，在BOSS直聘上给招聘方写首次打招呼消息。像真人通过微信/BOSS首次沟通那样，自然、有温度、不套路。',
     '',
     '【字数约束】全文不含换行，严格不超过150字（目标区间120~150字）。能讲清楚即可，不必凑字数、不要写半句。',
     '',
     '【结构（单段，不分段、不编号、不写"第一/第二"）】一句话自然语流，按此顺序展开：',
-    '① 开头：您好，我是{真实姓名}，{年限}+{核心领域}经验，{一句话职业定位}；',
+    '① 开头：' + (hasPortfolio ? '你好，有案例和作品集。' : (userName ? `你好，我是${userName}。` : '你好！')) + '{年限}+{核心领域}经验，{一句话职业定位}；',
     '② 关联公司：点出你关注到贵司正在做什么 / 这岗位为何吸引你（只基于JD推断，不得编造公司动向）；',
     '③ 最匹配项目：只讲1个最贴合该岗位的项目，含「做了什么 / 解决了什么业务问题 / 用了什么方法 / 拿到什么量化结果（数字必须与简历一致）」；',
     '④ 能力匹配表达：始终以「可迁移能力」建立信心——优先点出与岗位高度契合、能快速复用的经验与方法论（如"我的XX经验/方法论可快速复用到贵司的XX场景"）。若确实存在跨领域或能力缺口，只做极轻量一笔带过（不展开、不自我否定、不写"还在学/不足"），并立即用可迁移能力兜底收束，绝不让缺口成为文案重心；经验完全匹配时不提缺口。',
     '⑤【必须·最高优先级】收尾：必须以一句完整的「期待进一步交流 / 期待为贵司带来价值 / 希望有机会详聊」类收尾结束。即使前面要删减，也绝不可省略收尾句——宁可少讲一个案例也要保住收尾。',
     '',
-    '【真人语气要诀】参考下面示例的口吻，但严禁使用示例中的姓名和她的任何数据，必须换成候选人自己的真实简历信息：',
-    '示例1：您好，我是周彩妮，我对AIGC创作者运营岗位很感兴趣。我有7年社区和创作者运营经验，曾主导"声音鉴定"创新玩法，上线3天UV达52万+，带动直播DAU提升30%。我擅长通过活动策划和社群运营提升创作者活跃和内容产出，我的用户洞察与活动落地能力可快速复用到AIGC创作者孵化场景，期待为平台挖掘和孵化优质AIGC创作者。',
-    '示例2：您好，我是周彩妮，小红书是UGC社区的标杆，我一直在关注其"种草经济"生态。我有7年内容社区运营经验，曾从0搭建发现页社区，半年内UV提升250%；也主导过创新玩法，上线3天UV达52万。期待能将社区增长和创作者运营经验带到小红书。',
-    '示例3：您好，我是周彩妮，看到途游正在拓展新品类，创作者运营需要从0搭建生态。我在喜马拉雅从0搭建过新主播成长体系，将培养周期从3个月缩短至1个月，新主播7日留存提升40%；也搭建过官方MCN，深度连接50+核心主播。我相信这些经验能帮助新项目快速构建活跃的创作者生态，期待交流。',
+    '【真人语气要诀】参考下面示例的口吻，但严禁使用示例中的姓名和她的任何数据，必须换成候选人自己的真实简历信息。注意：下方示例仅作语气/结构参考，实际开头须严格按本岗位规则——有作品集→以「你好，有案例和作品集」起句；无作品集→以「你好，我是{姓名}」起句（示例里的"有案例和作品集"仅因示例作者勾选了作品集）。',
+    '示例1：您好，有案例和作品集。我对AIGC创作者运营岗位很感兴趣。我有7年社区和创作者运营经验，曾主导"声音鉴定"创新玩法，上线3天UV达52万+，带动直播DAU提升30%。我擅长通过活动策划和社群运营提升创作者活跃和内容产出，我的用户洞察与活动落地能力可快速复用到AIGC创作者孵化场景，期待为平台挖掘和孵化优质AIGC创作者。',
+    '示例2：您好，有案例和作品集。小红书是UGC社区的标杆，我一直在关注其"种草经济"生态。我有7年内容社区运营经验，曾从0搭建发现页社区，半年内UV提升250%；也主导过创新玩法，上线3天UV达52万。期待能将社区增长和创作者运营经验带到小红书。',
+    '示例3：您好，有案例和作品集。看到途游正在拓展新品类，创作者运营需要从0搭建生态。我在喜马拉雅从0搭建过新主播成长体系，将培养周期从3个月缩短至1个月，新主播7日留存提升40%；也搭建过官方MCN，深度连接50+核心主播。我相信这些经验能帮助新项目快速构建活跃的创作者生态，期待交流。',
     '',
-    '【真实性铁律 · 违反即不合格】只能使用简历里明确写过的事实（公司/项目/工具/技能/数字/年限）；数字必须与简历完全一致，不得编造或夸大；"贵司正在…"仅基于JD推断，不得脑补公司未公开动向；姓名必须用简历真实姓名。',
+    '【真实性铁律 · 违反即不合格】只能使用简历里明确写过的事实（公司/项目/工具/技能/数字/年限）；数字必须与简历完全一致，不得编造或夸大；"贵司正在…"仅基于JD推断，不得脑补公司未公开动向；' + (hasPortfolio ? '文案开头固定为「你好，有案例和作品集」，全篇不出现候选人姓名。' : '文案开头固定为「你好，我是{姓名}」，姓名仅出现在开头，正文不再重复姓名。'),
     '整体风格：像候选人与HR的首次真实沟通，专业但自然，不是培训稿、不是自我介绍；纯文本输出，不要markdown、不要引号包裹、不要落款。',
     '',
     '输出前自检：必须严格≤150字（超过会被直接截断、无二次机会），务必一次写达标——优先砍修饰词与次要细节、保留硬数据与收尾，确认是单段、结尾含"期待/希望/盼"等收尾词、收尾是完整句子后再输出。'
   ].join('\n');
 
   const kwLine = (job.keywords && job.keywords.length) ? `\n【岗位核心能力关键词】${job.keywords.join('、')}` : '';
-  const nameLine = userName ? `\n【我的姓名/称呼】${userName}` : '';
+  const nameLine = (!hasPortfolio && userName) ? `\n【我的姓名/称呼】${userName}` : '';  // 有作品集时不透传姓名；无作品集时透传，供模型写开头
   const messages = [
     { role: 'system', content: sys },
     { role: 'user', content: `【目标岗位】${job.title}｜${job.company}${kwLine}${nameLine}\n【岗位JD】\n${(job.jd || '').slice(0, 2000)}\n\n【我的完整简历】\n${resumeText.slice(0, 2500)}` }
@@ -224,11 +243,13 @@ async function genGreeting(job, resumeText, apiKey, userName) {
     const compressMsgs = [
       ...messages,
       { role: 'assistant', content: text },
-      { role: 'user', content: `上面这版共${plainLen(text)}字（不含换行），超出160字上限约${over}字。请压缩重写：保持单段不分段，开头的「您好，我是XX」问候必须原样保留，职业定位与案例核心数据保留，优先删减修饰词和次要细节，收尾必须是完整句子，且必须保留一句「期待进一步交流」式收尾（即使要再砍案例也要保住收尾）。直接输出压缩后的全文，不要任何解释。` }
+      { role: 'user', content: `上面这版共${plainLen(text)}字（不含换行），超出160字上限约${over}字。请压缩重写：保持单段不分段，开头的「${(hasPortfolio ? '你好，有案例和作品集' : ('你好，我是' + (userName || 'XX')))}」必须原样保留，职业定位与案例核心数据保留，优先删减修饰词和次要细节，收尾必须是完整句子，且必须保留一句「期待进一步交流」式收尾（即使要再砍案例也要保住收尾）。直接输出压缩后的全文，不要任何解释。` }
     ];
     text = (await callDeepSeek(compressMsgs, apiKey, false)).trim();
   }
 
+  // 强制条件开头（有作品集→"你好，有案例和作品集"；否则→"你好，我是{姓名}"）
+  text = ensureOpening(text, hasPortfolio, userName);
   // 最终兜底：仍超长则在句子边界优雅截断（绝不出现半句+省略号）
   if (plainLen(text) > 160) {
     text = truncateAtSentence(text, 158);
@@ -268,6 +289,10 @@ async function runDetailCollection(pendingJobs, notifyTabId) {
       notify(notifyTabId, { type: 'COLLECT_RISK' });
       return { results };
     }
+    if (detail && detail.closed) {
+      // 详情页确认职位已关闭/失效 → 直接丢弃，不进面板（也不浪费后续投递）
+      continue;
+    }
     if (detail) {
       const wasHunter = job.isHeadhunter; // 列表级已判定猎头则保留（详情级与列表级取"或"）
       Object.assign(job, detail);
@@ -284,6 +309,73 @@ async function runDetailCollection(pendingJobs, notifyTabId) {
   return { results };
 }
 
+// ============================================================
+// 失效检测：逐个打开已采集岗位详情页，按实时状态移除失效/关闭者（不再依赖搜索页）
+// ============================================================
+function jobKeyOf(u) {
+  if (!u) return '';
+  const m = u.match(/\/job_detail\/([^.?#]+)/);
+  return m ? m[1] : u;
+}
+
+// 失效检测：逐个打开「已采集岗位列表」中每个岗位的详情页，检查实时关闭/失效状态并移除
+// （不再依赖当前打开的搜索页，直接扫描已采集列表；已投递岗位跳过）
+async function runClosedCheck(notifyTabId) {
+  const { jobs = [] } = await sGet(['jobs']);
+  if (!jobs.length) return { ok: true, removed: 0, jobs, note: '列表为空，无需检测' };
+
+  // 待检测：未投递 + 有有效详情链接，按 job_detail id 去重（避免重复开同一岗位）
+  const targets = [];
+  const seen = new Set();
+  for (const j of jobs) {
+    if (j.status === 'delivered') continue;
+    const key = jobKeyOf(j.url);
+    if (!key) continue;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    targets.push(j);
+  }
+  if (!targets.length) return { ok: true, removed: 0, jobs, note: '没有可检测的岗位（均已投递或无详情链接）' };
+
+  const closedIds = new Set();
+  let risk = false;
+
+  for (let i = 0; i < targets.length; i++) {
+    const job = targets[i];
+    notify(notifyTabId, { type: 'CLOSED_PROGRESS', done: i, total: targets.length, title: job.title });
+
+    let url = job.url;
+    if (url && !/^https?:/.test(url)) url = 'https://www.zhipin.com' + url;
+    let tab;
+    try { tab = await chrome.tabs.create({ url, active: false }); }
+    catch (e) { continue; }
+
+    // 等待渲染（最多约 14 秒），轮询直到拿到明确结果（已渲染标题 / 已关闭 / 风控）
+    let res = null;
+    for (let t = 0; t < 16; t++) {
+      await sleep(rand(400, 900));
+      res = await inject(tab.id, 'jhCheckClosedDetail', []);
+      if (res && (res.title || res.closed || res.risk)) break;
+    }
+    try { await chrome.tabs.remove(tab.id); } catch (e) {}
+
+    if (res && res.risk) { risk = true; break; }
+    if (res && res.closed) closedIds.add(jobKeyOf(job.url));
+    await sleep(rand(1200, 3000)); // 真人节奏，降低风控观测
+  }
+
+  if (risk) {
+    return { ok: true, removed: closedIds.size, risk: true, jobs, note: '检测到安全验证，已中断检测' };
+  }
+  if (closedIds.size) {
+    const remaining = jobs.filter((j) => !closedIds.has(jobKeyOf(j.url)));
+    const removed = jobs.length - remaining.length;
+    await sSet({ jobs: remaining });
+    return { ok: true, removed, jobs: remaining };
+  }
+  return { ok: true, removed: 0, jobs };
+}
+
 function waitDetailResult(jobId, timeout) {
   return new Promise((resolve) => {
     const timer = setTimeout(() => { cleanup(); resolve(null); }, timeout);
@@ -295,6 +387,10 @@ function waitDetailResult(jobId, timeout) {
       if (msg && msg.type === 'DETAIL_RISK' && msg.jobId === jobId) {
         cleanup();
         resolve({ risk: true });
+      }
+      if (msg && msg.type === 'DETAIL_CLOSED' && msg.jobId === jobId) {
+        cleanup();
+        resolve({ closed: true });
       }
     }
     function cleanup() {
@@ -799,10 +895,43 @@ function jhDispatch(payload) {
     };
   }
 
+  // 失效检测：扫描当前列表页所有岗位卡片，返回每张卡的 {url, closed}。
+  // 注意：jhDispatch 是注入到隔离世界的自包含函数，无法访问内容脚本里的 JH.isJobClosed，
+  // 因此关闭词表在此内联一份（与 selectors.js 的 JH_CLOSED_WORDS 保持一致）。
+  function jhScanClosed() {
+    const CLOSED = ['职位已关闭', '职位失效', '该职位已关闭', '该职位已暂停', '暂停招聘', '已暂停招聘', '停止招聘', '已停止招聘', '招聘已结束', '职位已下线', '已下线', '岗位已关闭', '已停招'];
+    const cards = Array.from(document.querySelectorAll('.job-card-box'));
+    return cards.map((card) => {
+      const link = card.querySelector('a.job-name, .job-name, a[href*="job_detail"]');
+      let href = link ? (link.getAttribute('href') || '') : '';
+      if (href && href.charAt(0) === '/') href = location.origin + href;
+      const txt = (card.innerText || '').replace(/\s+/g, '');
+      return { url: href, closed: CLOSED.some((w) => txt.includes(w)) };
+    });
+  }
+
+  // 当前列表页岗位卡片数量（供失效检测轮询等待渲染）
+  function jhCardCount() {
+    return { count: document.querySelectorAll('.job-card-box').length };
+  }
+
+  // 详情页关闭/失效检测：直接读取详情页文本，判断该职位是否已关闭/暂停/下线
+  // （供失效检测逐个扫已采集列表用）。注入函数自包含，关闭词表与风控词内联一份。
+  function jhCheckClosedDetail() {
+    const CLOSED = ['职位已关闭', '职位失效', '该职位已关闭', '该职位已暂停', '暂停招聘', '已暂停招聘', '停止招聘', '已停止招聘', '招聘已结束', '职位已下线', '已下线', '岗位已关闭', '已停招'];
+    const bodyTxt = (document.body ? document.body.innerText : '') || '';
+    const stripped = bodyTxt.replace(/\s+/g, '');
+    const closed = CLOSED.some((w) => stripped.includes(w));
+    const risk = /验证|安全检查|captcha|slider|geetest|请完成安全验证/.test(bodyTxt)
+      || location.href.includes('safe/verify') || location.href.includes('security-check') || location.href.includes('captcha');
+    return { closed, risk, title: (document.title || '').slice(0, 60) };
+  }
+
   const map = {
     jhReady, jhGetChatUrl, jhCheckChat, jhFindAndClickContact,
     jhResolveInput, jhFindInput, jhTypeChunk, jhTypeFull, jhGetInputText, jhSend, jhVerifySent,
-    jhSendImage, jhCountMyImgs, jhOpenFromList, jhCaptureChatState, jhGetChatBtnRect
+    jhSendImage, jhCountMyImgs, jhOpenFromList, jhCaptureChatState, jhGetChatBtnRect,
+    jhScanClosed, jhCardCount, jhCheckClosedDetail
   };
   const fn = map[name];
   return fn ? fn.apply(null, args || []) : null;
@@ -1001,10 +1130,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           return sendResponse({ ok: true, result });
         }
         case 'GEN_GREETING': {
-          const { config = {} } = await sGet(['config']);
+          const { config = {}, resume = {} } = await sGet(['config', 'resume']);
           if (!config.apiKey) return sendResponse({ error: '请先填写 DeepSeek API Key' });
-          const text = await genGreeting(msg.job, msg.resumeText, config.apiKey, msg.userName || '');
+          const text = await genGreeting(msg.job, msg.resumeText, config.apiKey, resume.name || msg.userName || '', !!resume.hasPortfolio);
           return sendResponse({ ok: true, text });
+        }
+        case 'CLOSED_CHECK': {
+          const result = await runClosedCheck(sender.tab && sender.tab.id);
+          return sendResponse(result);
         }
         case 'COLLECT_DETAILS': {
           // runDetailCollection 内部已返回 {results:[...]}，此处必须解包一层，

@@ -147,6 +147,17 @@ JH.riskDetected = () => {
 };
 
 /**
+ * 职位关闭/失效检测：通过页面文本判断该职位是否已关闭/暂停招聘/下线。
+ * 不依赖脆弱的 class（BOSS 改版频繁），直接文本匹配，抗改版。
+ * @param {Node|Document} [root=document] 检测范围；传卡片元素则只查该卡片，传 document 查整页。
+ */
+JH.isJobClosed = (root = document) => {
+  const text = (root && (root.textContent || (root.body && root.body.innerText) || '')) || '';
+  const t = text.replace(/\s+/g, '');
+  return JH_CLOSED_WORDS.some((w) => t.includes(w));
+};
+
+/**
  * 模拟真人平滑滚动一段距离。
  * @param {number} distance 滚动总距离(px)
  * @param {object} [pace] 可选节奏参数。不传时与原行为完全一致（6~12 步、每步 80~260ms），

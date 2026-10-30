@@ -17,6 +17,12 @@ const JHDeliver = {
       return;
     }
 
+    // 职位已关闭/失效兜底：详情页整页含关闭关键词 → 直接跳过，不浪费受信任点击
+    if (JH.isJobClosed(document)) {
+      JH.send({ type: 'CONTACT_DONE', jobId: task.jobId, ok: false, skip: true, reason: '职位已关闭/失效，跳过' });
+      return;
+    }
+
     const btn = await JH.waitFor(JH_SELECTORS.detailChatBtn, 8000);
     if (!btn) {
       JH.send({ type: 'CONTACT_DONE', jobId: task.jobId, ok: false, reason: '未找到「立即沟通」按钮' });

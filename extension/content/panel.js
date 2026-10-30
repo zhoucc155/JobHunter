@@ -50,8 +50,11 @@ const JHPanel = {
 
         <!-- ① 我的简历 -->
         <div class="jh-section jh-active" data-sec="resume">
-          <label class="jh-label">姓名 / 称呼（打招呼文案开头使用）</label>
-          <input class="jh-input" id="jh-name" placeholder="如：张三 或 张女士，文案将以「您好，我是张三」开头" />
+          <label class="jh-label">姓名 / 称呼</label>
+          <div class="jh-row jh-row-name">
+            <input class="jh-input" id="jh-name" placeholder="如：张三 或 张女士（未勾选作品集时用于文案开头）" style="flex:1" />
+            <label class="jh-check jh-check-inline" style="flex:0 0 auto" title="勾选后打招呼文案以「你好，有案例和作品集」开头；不勾选则以「你好，我是{姓名}」开头"><input type="checkbox" id="jh-has-portfolio" /> 有作品集</label>
+          </div>
           <label class="jh-label">简历图片（投递时发送给招聘方）</label>
           <div class="jh-upload" id="jh-upload">
             <div id="jh-upload-hint">点击上传简历图片<br><small style="color:#94a3b8">支持 PNG / JPG，建议长图</small></div>
@@ -107,11 +110,13 @@ const JHPanel = {
           <div class="jh-toolbar">
             <button class="jh-btn jh-btn-primary jh-btn-sm" id="jh-deliver">文字投递</button>
             <button class="jh-btn jh-btn-accent jh-btn-sm" id="jh-deliver-img" title="先发简历图、再发打招呼文案（仅一次唤醒会话框）">图片投递</button>
+            <button class="jh-btn jh-btn-ghost jh-btn-sm" id="jh-closed-check" title="逐个打开已采集岗位的详情页，检测实时关闭/失效状态并移除（自动跳过已投递岗位）">失效检测</button>
             <button class="jh-btn jh-btn-danger jh-btn-sm" id="jh-del">删除选中</button>
           </div>
           <div class="jh-toolbar">
             <label class="jh-check" style="margin:0"><input type="checkbox" id="jh-selall" /> 全选</label>
             <label class="jh-check" style="margin:0 0 0 12px" title="勾选后批量投递不再逐个确认：生成文案后自动发送并自动进入下一岗（带随机间隔与风控保护）"><input type="checkbox" id="jh-auto-loop" /> 自动投递</label>
+            <label class="jh-check" style="margin:0 0 0 12px" title="勾选后批量选中匹配度≤50分的岗位"><input type="checkbox" id="jh-lowmatch" /> 低匹配</label>
             <div class="jh-spacer"></div>
             <span class="jh-hint" id="jh-jobcount"></span>
           </div>
@@ -206,6 +211,12 @@ const JHPanel = {
       await JH.set({ autoLoop: e.target.checked });
       if (!e.target.checked && this.clearAutoTimer) this.clearAutoTimer();
     });
+    // 「低匹配」勾选框：勾选后批量选中匹配度≤50分且未投递的岗位
+    this.el.querySelector('#jh-lowmatch').addEventListener('change', (e) => {
+      this.selectLowMatch(e.target.checked);
+    });
+    // 「失效检测」按钮：扫描当前 BOSS 搜索页，移除列表内已失效/关闭的岗位
+    this.el.querySelector('#jh-closed-check').addEventListener('click', () => this.runClosedCheck());
 
     // 面板展开时，在面板及悬浮球「以外」按下鼠标才自动收起。
     // 用 mousedown 而非 click：从面板内按下、拖到面板外松开（如框选输入框文字）不会误收起，
@@ -289,6 +300,7 @@ const JHPanel = {
     }
     if (resume.text) this.el.querySelector('#jh-resume-text').value = resume.text;
     if (resume.name) this.el.querySelector('#jh-name').value = resume.name;
+    if (this.el.querySelector('#jh-has-portfolio')) this.el.querySelector('#jh-has-portfolio').checked = !!resume.hasPortfolio;
     // 配置
     if (config.jobKeywords) this.el.querySelector('#jh-kw').value = config.jobKeywords;
     if (config.salaryRange) this.el.querySelector('#jh-salary').value = config.salaryRange;
@@ -394,6 +406,7 @@ const JHPanel = {
       imageDataUrl: this._pendingImage ? this._pendingImage.dataUrl : resume.imageDataUrl,
       imageName: this._pendingImage ? this._pendingImage.name : resume.imageName,
       name: this.el.querySelector('#jh-name').value.trim(),
+      hasPortfolio: this.el.querySelector('#jh-has-portfolio').checked,
       text: this.el.querySelector('#jh-resume-text').value.trim()
     };
     if (!next.text) return this.status('请粘贴简历文字版（AI分析必需）', 'warn');
@@ -1263,6 +1276,57 @@ const JHPanel = {
     this.renderJobs(next);
     this.el.querySelector('#jh-selall').checked = false;
     this.status(`已删除 ${ids.length} 个岗位`, 'ok');
+  },
+
+  /** 低匹配：勾选后批量选中匹配度≤50分且未投递的岗位；取消勾选则清空对应选中 */
+  selectLowMatch(checked) {
+    const boxes = this.el.querySelectorAll('#jh-joblist input[type="checkbox"]:not([disabled])');
+    if (checked) {
+      const jobs = this._jobs || [];
+      const lowIds = new Set(
+        jobs
+          .filter((j) => typeof j.score === 'number' && j.score <= 50 && j.status !== 'delivered')
+          .map((j) => j.id)
+      );
+      if (!lowIds.size) return this.status('没有匹配度≤50分的岗位', 'info', 3000);
+      boxes.forEach((c) => { if (lowIds.has(c.dataset.id)) c.checked = true; });
+      this.updateJobCount();
+      this.status(`已选中 ${lowIds.size} 个低匹配（≤50分）岗位`, 'ok', 3000);
+    } else {
+      // 取消勾选：仅取消当前低分组（不影响其它手动勾选）
+      const jobs = this._jobs || [];
+      const lowIds = new Set(
+        jobs
+          .filter((j) => typeof j.score === 'number' && j.score <= 50 && j.status !== 'delivered')
+          .map((j) => j.id)
+      );
+      boxes.forEach((c) => { if (lowIds.has(c.dataset.id)) c.checked = false; });
+      this.updateJobCount();
+    }
+  },
+
+  /** 失效检测：background 逐个打开已采集岗位详情页检查实时状态，移除已失效/关闭的岗位 */
+  async runClosedCheck() {
+    this.status('失效检测中…（逐个打开岗位详情页检查实时状态）', 'info', 0);
+    const onProgress = (msg) => {
+      if (!msg || msg.type !== 'CLOSED_PROGRESS') return;
+      const done = msg.done || 0, total = msg.total || 0;
+      this.status(`失效检测中 ${done}/${total}${msg.title ? ' · ' + msg.title : ''}`, 'info', 0);
+    };
+    chrome.runtime.onMessage.addListener(onProgress);
+    try {
+      const resp = await JH.send({ type: 'CLOSED_CHECK' });
+      if (!resp || !resp.ok) return this.status('失效检测失败，请稍后重试', 'error', 6000);
+      if (resp.risk) return this.status('⚠️ 检测到安全验证，失效检测已中断。请手动完成验证后重试', 'error', 0);
+      if (resp.removed > 0) {
+        this.renderJobs(resp.jobs);
+        this.status(`失效检测完成：移除 ${resp.removed} 个已失效/关闭的岗位`, 'ok', 6000);
+      } else {
+        this.status(resp.note ? `失效检测完成：${resp.note}` : '失效检测完成：未发现失效岗位', 'ok', 6000);
+      }
+    } finally {
+      chrome.runtime.onMessage.removeListener(onProgress);
+    }
   },
 
   // ==========================================================

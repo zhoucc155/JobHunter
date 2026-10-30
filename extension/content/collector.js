@@ -266,6 +266,9 @@ const JHCollector = {
     const title = JH.$(JH_SELECTORS.jobCardTitle, card);
     if (!link || !title) return null;
 
+    // 跳过已关闭/失效职位：列表卡片文本含关闭关键词（不依赖脆弱 class，抗改版）
+    if (JH.isJobClosed(card)) return null;
+
     let url = link.getAttribute('href') || '';
     if (url.startsWith('/')) url = 'https://www.zhipin.com' + url;
     if (!url.includes('job_detail')) return null;
@@ -505,6 +508,12 @@ const JHCollector = {
 
     if (JH.riskDetected()) {
       JH.send({ type: 'DETAIL_RISK', jobId: task.jobId });
+      return;
+    }
+
+    // 详情页关闭/失效检测：整页文本含关闭关键词 → 上报 DETAIL_CLOSED，不浪费后续补采与投递
+    if (JH.isJobClosed(document)) {
+      JH.send({ type: 'DETAIL_CLOSED', jobId: task.jobId });
       return;
     }
 
